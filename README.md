@@ -220,7 +220,7 @@ python scripts/benchmark_index.py
 
 ## Limitations
 
-- **The hash embedder is not semantic.** It only matches shared words. Use Ollama for real searches.
+- **The hash embedder is not semantic.** It only matches shared words. With it, "which data structure is last in first out" ranks `queues.txt` above `stacks.md`, because the queues file repeats "first in first out" and "data structure". Use Ollama for real searches.
 - **Untested against real Ollama and Tavily.** Ollama wasn't running on the build machine, and real Tavily calls cost credits, so every automated test uses local stub servers. Opt-in smoke tests exist (see Development). The 0.5 threshold is a starting point that nobody has tuned for `nomic-embed-text` scores.
 - **Exact search keeps everything in RAM.** The store holds every vector and the index holds a copy: 100,000 chunks at 768 dimensions take about 300 MB each, so roughly 600 MB.
 - **PDFs need a text layer.** pypdf extracts embedded text only. Scanned PDFs give no text because there is no OCR.
