@@ -1,0 +1,15 @@
+# Generated from pyproject.toml: [project] dependencies + the 'dev' extra.
+# Regenerate the package lines (Python 3.11+) with:
+#   python -c "import tomllib;p=tomllib.load(open('pyproject.toml','rb'))['project'];print(*p['dependencies'],*p['optional-dependencies']['dev'],sep=chr(10))"
+
+numpy
+pypdf
+faiss-cpu
+httpx
+requests
+trafilatura
+fastapi
+uvicorn
+pydantic>=2
+pytest>=8
+ruff==0.17.1
