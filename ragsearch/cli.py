@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ragsearch.config import Settings, load_settings
 from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
+from ragsearch.index import index_backend
 from ragsearch.loaders import load_documents
 from ragsearch.pipeline import ingest, search
 from ragsearch.store import Store, StoreError
@@ -67,7 +68,11 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     embedder = make_embedder(args.embedder, host=settings.ollama_host,
                              model=settings.embed_model)
     try:
-        store = Store(args.data_dir or settings.data_dir, embedder_name=embedder.name)
+        store = Store(
+            args.data_dir or settings.data_dir,
+            embedder_name=embedder.name,
+            index_factory=index_backend(settings.index_backend),
+        )
         commands = {"ingest": _cmd_ingest, "search": _cmd_search}
         commands[args.command](args, embedder, store)
     except (EmbeddingError, StoreError) as err:

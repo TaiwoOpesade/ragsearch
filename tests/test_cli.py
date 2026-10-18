@@ -88,3 +88,11 @@ def test_python_dash_m_entry_point_shows_help():
     )
     assert result.returncode == 0
     assert "ingest" in result.stdout and "search" in result.stdout
+
+
+def test_cli_works_with_the_faiss_backend(tmp_path, capsys):
+    settings = Settings(data_dir=tmp_path / "data", index_backend="faiss")
+    run(["ingest", str(FIXTURES), "--embedder", "hash"], settings, capsys)
+    _, out, _ = run(["search", "chlorophyll glucose", "-k", "1", "--embedder", "hash"],
+                    settings, capsys)
+    assert out.splitlines()[0].endswith("photosynthesis.md")

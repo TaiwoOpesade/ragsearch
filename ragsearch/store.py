@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ragsearch.index import SearchResult, VectorIndex
+from ragsearch.index import Index, SearchResult, VectorIndex, load_npz, save_npz
 
 
 class StoreError(RuntimeError):
@@ -25,7 +25,7 @@ class Store:
         self,
         data_dir: str | Path,
         embedder_name: str,
-        index_factory: Callable[[int], VectorIndex] = VectorIndex,
+        index_factory: Callable[[int], Index] = VectorIndex,
     ):
         self.data_dir = Path(data_dir)
         self.embedder_name = embedder_name
@@ -33,7 +33,7 @@ class Store:
         self._sources: dict[str, dict] = {}
         self._vectors: np.ndarray | None = None
         self._items: list[dict] = []
-        self._index: VectorIndex | None = None
+        self._index: Index | None = None
         self._load()
 
     @property
@@ -87,8 +87,7 @@ class Store:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         vectors = self._vectors if self._vectors is not None else np.zeros((0, 0), np.float32)
         tmp = self._index_path.with_suffix(".tmp")
-        with open(tmp, "wb") as f:
-            np.savez_compressed(f, vectors=vectors, items=np.array(json.dumps(self._items)))
+        save_npz(tmp, vectors, self._items)
         os.replace(tmp, self._index_path)  # never leave a half-written index behind
         manifest = {"embedder": self.embedder_name, "sources": self._sources}
         self._manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -104,6 +103,5 @@ class Store:
             )
         self._sources = manifest["sources"]
         if self._index_path.exists():
-            with np.load(self._index_path, allow_pickle=False) as data:
-                self._vectors = data["vectors"] if data["vectors"].size else None
-                self._items = json.loads(data["items"].item())
+            vectors, self._items = load_npz(self._index_path)
+            self._vectors = vectors if vectors.size else None

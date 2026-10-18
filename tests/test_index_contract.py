@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from ragsearch.faiss_index import FaissIndex
-from ragsearch.index import Index, VectorIndex
+from ragsearch.index import Index, VectorIndex, index_backend
 
 
 @pytest.fixture(params=[VectorIndex, FaissIndex], ids=["numpy", "faiss"])
@@ -123,3 +123,10 @@ def test_backends_agree_on_random_data():
         a, b = numpy_idx.search(query, k=10), faiss_idx.search(query, k=10)
         assert [r.item for r in a] == [r.item for r in b]
         assert [r.score for r in a] == pytest.approx([r.score for r in b], abs=1e-5)
+
+
+def test_index_backend_looks_up_classes_by_name():
+    assert index_backend("numpy") is VectorIndex
+    assert index_backend("faiss") is FaissIndex
+    with pytest.raises(ValueError, match="annoy"):
+        index_backend("annoy")

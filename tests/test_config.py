@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ragsearch.config import Settings, load_settings
 
 
@@ -43,3 +45,13 @@ def test_empty_api_key_is_treated_as_missing():
 def test_api_key_never_appears_in_repr():
     settings = Settings(tavily_api_key="tvly-secret-value")
     assert "tvly-secret-value" not in repr(settings)
+
+
+def test_index_backend_defaults_to_numpy_and_can_be_faiss():
+    assert load_settings({}).index_backend == "numpy"
+    assert load_settings({"INDEX_BACKEND": "FAISS"}).index_backend == "faiss"
+
+
+def test_unknown_index_backend_is_rejected():
+    with pytest.raises(ValueError, match="INDEX_BACKEND"):
+        load_settings({"INDEX_BACKEND": "annoy"})

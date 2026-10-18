@@ -70,6 +70,17 @@ def load_npz(path: str | Path) -> tuple[np.ndarray, list[dict]]:
         return data["vectors"], json.loads(data["items"].item())
 
 
+def index_backend(name: str) -> type[Index]:
+    """Look up an index class by its config name: ``"numpy"`` or ``"faiss"``."""
+    if name == "numpy":
+        return VectorIndex
+    if name == "faiss":
+        from ragsearch.faiss_index import FaissIndex  # only import FAISS when used
+
+        return FaissIndex
+    raise ValueError(f"unknown index backend {name!r}; expected 'numpy' or 'faiss'")
+
+
 class VectorIndex:
     def __init__(self, dim: int):
         self.dim = dim

@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 
+from ragsearch.faiss_index import FaissIndex
 from ragsearch.store import Store, StoreError
 
 
@@ -85,3 +86,9 @@ def test_replace_with_no_chunks_removes_source_but_remembers_hash(tmp_path):
     store.replace("a.md", "h2", np.zeros((0, 3), dtype=np.float32), [])
     assert len(store) == 0
     assert store.is_current("a.md", "h2")
+
+
+def test_store_can_search_with_the_faiss_backend(tmp_path):
+    store = Store(tmp_path, embedder_name="hash-3", index_factory=FaissIndex)
+    store.replace("a.md", "h", vecs([1, 0, 0], [0, 1, 0]), items("a.md", 2))
+    assert store.search(vecs([0, 1, 0])[0], k=1)[0].item["index"] == 1
