@@ -1,5 +1,6 @@
 """Split text into overlapping word-based chunks."""
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 
@@ -37,3 +38,30 @@ def chunk_text(
             break
         start += step
     return chunks
+
+
+def chunk_stream(
+    segments: Iterable[str], source: str = "", size: int = 200, overlap: int = 40
+) -> Iterator[Chunk]:
+    """Chunk a stream of text segments exactly as ``chunk_text`` would chunk their join.
+
+    Words flow across segment boundaries, so a page break or a 1 MB read boundary
+    never cuts a chunk short, and at most ``size + 1`` words are held at a time.
+    """
+    if size <= 0:
+        raise ValueError("size must be positive")
+    if overlap < 0 or overlap >= size:
+        raise ValueError("overlap must be >= 0 and smaller than size")
+
+    step = size - overlap
+    buffer: list[str] = []
+    index = 0
+    for segment in segments:
+        for word in segment.split():
+            buffer.append(word)
+            if len(buffer) > size:  # more follows, so this window is not the last
+                yield Chunk(text=" ".join(buffer[:size]), source=source, index=index)
+                index += 1
+                del buffer[:step]
+    if buffer:
+        yield Chunk(text=" ".join(buffer), source=source, index=index)
