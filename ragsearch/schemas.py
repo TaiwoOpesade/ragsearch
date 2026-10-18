@@ -15,8 +15,10 @@ class Health(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    path: str | None = Field(None, description="local file or directory on the server")
-    url: str | None = Field(None, description="http(s) page or site to ingest")
+    path: str | None = Field(None, min_length=1,
+                             description="local file or directory on the server")
+    url: str | None = Field(None, pattern=r"^https?://\S+$",
+                            description="http(s) page or site to ingest")
     crawl: bool = False
     max_pages: int = Field(30, ge=1, le=500)
     max_depth: int = Field(2, ge=0, le=5)
@@ -34,6 +36,8 @@ class IngestResponse(BaseModel):
     updated: list[str]
     skipped: list[str]
     failed: list[str]
+    removed: list[str] = Field(default_factory=list,
+                               description="indexed files under the folder that no longer exist")
     total_chunks: int
 
 
@@ -53,6 +57,8 @@ class SearchHit(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[SearchHit]
+    warnings: list[str] = Field(default_factory=list,
+                                description="why the web fallback was skipped or failed")
 
 
 class AskRequest(BaseModel):
@@ -76,3 +82,4 @@ class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
     results: list[NumberedHit]
+    warnings: list[str] = Field(default_factory=list)

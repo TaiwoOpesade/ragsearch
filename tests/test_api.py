@@ -144,3 +144,92 @@ def test_budget_exhaustion_is_reported_as_429(stub_server, monkeypatch, tmp_path
     response = client.post("/ingest", json={"url": "https://x.example", "provider": "tavily"})
     assert response.status_code == 429
     assert stub_server.requests == []
+
+
+# --- input validation, warnings, shared crawler, other processes -----------------
+
+
+@pytest.mark.parametrize("body", [{"url": ""}, {"path": ""}, {"url": "ftp://x.example"},
+                                  {"url": "not a url"}])
+def test_empty_or_non_http_targets_are_rejected(client, body):
+    assert client.post("/ingest", json=body).status_code == 422
+
+
+def test_missing_ingest_path_is_a_422(client, tmp_path):
+    response = client.post("/ingest", json={"path": str(tmp_path / "nope")})
+    assert response.status_code == 422
+    assert "does not exist" in response.json()["detail"]
+
+
+def test_ingest_reports_removed_files(client, tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "a.md").write_text("alpha", encoding="utf-8")
+    (notes / "b.md").write_text("beta", encoding="utf-8")
+    client.post("/ingest", json={"path": str(notes)})
+    (notes / "a.md").unlink()
+    body = client.post("/ingest", json={"path": str(notes)}).json()
+    assert [s.rsplit("/", 1)[-1] for s in body["removed"]] == ["a.md"]
+
+
+def test_web_search_without_a_key_degrades_with_a_warning(tmp_path, generator):
+    settings = Settings(data_dir=tmp_path / "data", embedder="hash")  # no Tavily key
+    client = TestClient(create_app(settings=settings, generator=generator))
+    response = client.post("/search", json={"query": "anything", "web": True})
+    assert response.status_code == 200
+    assert any("TAVILY_API_KEY" in w for w in response.json()["warnings"])
+
+
+def test_web_failures_appear_in_warnings(stub_server, monkeypatch, settings, generator):
+    monkeypatch.setattr(tavily, "BASE_URL", stub_server.url)
+    stub_server.routes["/search"] = (500, {}, {"detail": {"error": "boom"}})
+    client = TestClient(create_app(settings=settings, generator=generator))
+    for path, key in (("/search", "query"), ("/ask", "question")):
+        body = client.post(path, json={key: "anything", "web": True}).json()
+        assert any("web search failed" in w for w in body["warnings"])
+
+
+def test_no_warnings_when_the_web_is_not_used(ingested):
+    assert ingested.post("/search", json={"query": "stack"}).json()["warnings"] == []
+
+
+def test_mismatched_data_dir_stops_the_server_with_one_clear_message(tmp_path, generator):
+    from ragsearch.cli import main
+
+    main(["ingest", str(FIXTURES), "--embedder", "hash"],
+         settings=Settings(data_dir=tmp_path / "data"))
+    settings = Settings(data_dir=tmp_path / "data", embedder="ollama")
+    with pytest.raises(SystemExit, match="hash-512"):
+        create_app(settings=settings, generator=generator)
+
+
+def test_api_sees_documents_ingested_by_another_process(client, settings):
+    from ragsearch.cli import main
+
+    assert client.get("/health").json()["chunks"] == 0
+    main(["ingest", str(FIXTURES / "stacks.md"), "--embedder", "hash"], settings=settings)
+    assert client.get("/health").json()["chunks"] == 1
+    hits = client.post("/search", json={"query": "last in first out", "k": 1}).json()
+    assert hits["results"][0]["source"].endswith("stacks.md")
+
+
+def test_url_ingests_share_one_polite_crawler(stub_server, settings, generator):
+    from ragsearch.web.fetcher import Fetcher
+
+    sleeps: list[float] = []
+    clock = [0.0]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    html = {"Content-Type": "text/html"}
+    for name in ("a", "b"):
+        stub_server.routes[f"/{name}"] = (
+            200, html, f"<html><body><article><p>Page {name} text.</p></article></body></html>")
+    fetcher = Fetcher(sleep=sleep, clock=lambda: clock[0])
+    client = TestClient(create_app(settings=settings, generator=generator, fetcher=fetcher))
+    for name in ("a", "b"):
+        assert client.post("/ingest", json={"url": f"{stub_server.url}/{name}"}).status_code == 200
+    assert stub_server.paths.count("/robots.txt") == 1  # cached across API calls
+    assert len(sleeps) == len(stub_server.requests) - 1  # a full wait before every request
