@@ -1,4 +1,4 @@
-"""Command-line interface: ``python -m ragsearch ingest|search``."""
+"""Command-line interface: ``python -m ragsearch ingest|search|eval``."""
 
 import argparse
 import logging
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ragsearch.config import Settings, load_settings
 from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
+from ragsearch.eval import EvalError, evaluate, load_cases
 from ragsearch.index import index_backend
 from ragsearch.loaders import load_documents
 from ragsearch.pipeline import ingest
@@ -18,7 +19,7 @@ from ragsearch.web.sources import make_tavily, web_documents
 from ragsearch.web.tavily import TavilyError
 
 SNIPPET_CHARS = 160
-ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded)
+ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded, EvalError)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,6 +51,10 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="if local results are weak, also search Tavily (spends credits)")
     p_search.add_argument("--save-web", action="store_true",
                           help="add web results to the local index")
+
+    p_eval = commands.add_parser("eval", parents=[common], help="measure retrieval quality")
+    p_eval.add_argument("labelled", type=Path, help="JSON list of question/expected_source")
+    p_eval.add_argument("-k", type=int, default=5)
     return parser
 
 
@@ -87,6 +92,13 @@ def _cmd_search(args, settings: Settings, embedder: Embedder, store: Store) -> N
         print(f"   {_snippet(hit.text)}")
 
 
+def _cmd_eval(args, settings: Settings, embedder: Embedder, store: Store) -> None:
+    report = evaluate(load_cases(args.labelled), embedder, store, k=args.k)
+    print(f"questions: {report.n}")
+    print(f"recall@{report.k}: {report.recall:.3f}")
+    print(f"MRR@{report.k}: {report.mrr:.3f}")
+
+
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     args = _build_parser().parse_args(argv)
     settings = settings or load_settings()
@@ -100,7 +112,7 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
             embedder_name=embedder.name,
             index_factory=index_backend(settings.index_backend),
         )
-        commands = {"ingest": _cmd_ingest, "search": _cmd_search}
+        commands = {"ingest": _cmd_ingest, "search": _cmd_search, "eval": _cmd_eval}
         commands[args.command](args, settings, embedder, store)
     except ERRORS as err:
         print(f"error: {err}", file=sys.stderr)

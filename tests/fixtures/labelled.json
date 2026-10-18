@@ -1,0 +1,8 @@
+[
+  {"question": "Which data structure is last in first out?", "expected_source": "stacks.md"},
+  {"question": "What is used for undo and function calls during recursion?", "expected_source": "stacks.md"},
+  {"question": "Which structure is first in first out, joining at the rear?", "expected_source": "queues.txt"},
+  {"question": "What is used for printer spooling and CPU scheduling?", "expected_source": "queues.txt"},
+  {"question": "How do central banks bring inflation down?", "expected_source": "inflation.pdf"},
+  {"question": "How do plants use chlorophyll and light to make glucose?", "expected_source": "photosynthesis.md"}
+]
