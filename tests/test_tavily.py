@@ -38,7 +38,7 @@ def test_search_sends_bearer_auth_and_documented_fields(stub_server, client):
     assert request["method"] == "POST"
     assert request["headers"]["Authorization"] == f"Bearer {KEY}"
     assert request["json"] == {"query": "what is a stack", "max_results": 3,
-                               "search_depth": "basic"}
+                               "search_depth": "basic", "include_usage": True}
 
 
 def test_search_parses_results(stub_server, client):
@@ -86,7 +86,8 @@ def test_extract_returns_pages_and_charges_for_successes_only(stub_server, clien
     assert [(p.url, p.text) for p in pages] == [("https://a.example/1", "Page one text.")]
     body = stub_server.requests[0]["json"]
     assert body == {"urls": ["https://a.example/1", "https://a.example/2"],
-                    "extract_depth": "basic", "format": "text"}
+                    "extract_depth": "basic", "format": "text",
+                    "include_usage": True}
     assert budget.used == 1
 
 
@@ -110,7 +111,8 @@ def test_crawl_sends_documented_fields_and_stays_on_site(stub_server, client, bu
     pages = client.crawl("https://docs.example", max_pages=30, max_depth=2)
     body = stub_server.requests[0]["json"]
     assert body == {"url": "https://docs.example", "max_depth": 2, "limit": 30,
-                    "allow_external": False, "extract_depth": "basic", "format": "text"}
+                    "allow_external": False, "extract_depth": "basic", "format": "text",
+                    "include_usage": True}
     assert len(pages) == 10
     assert budget.used == 1 + 2  # map 10 pages + extract 10 pages
 
@@ -214,3 +216,68 @@ def test_connection_failures_are_retried(budget):
 def test_missing_key_message_mentions_the_env_file(budget):
     with pytest.raises(TavilyError, match=r"\.env"):
         TavilyClient(api_key=None, budget=budget)
+
+
+# --- key safety, limits and unreadable replies ---------------------------------
+
+
+@pytest.mark.parametrize("bad_key", ["tvly-abc ", "tvly-abc\n", "tvly a", "tvly-é"])
+def test_malformed_key_is_rejected_without_echoing_it(stub_server, budget, bad_key):
+    with pytest.raises(TavilyError, match="TAVILY_API_KEY") as exc:
+        TavilyClient(api_key=bad_key, budget=budget, base_url=stub_server.url)
+    assert bad_key.strip() not in str(exc.value)
+    assert stub_server.requests == []
+
+
+def test_key_is_redacted_if_the_server_echoes_it(stub_server, client):
+    stub_server.routes["/search"] = (400, {}, {"detail": {"error": f"bad key {KEY}"}})
+    with pytest.raises(TavilyError) as exc:
+        client.search("stack")
+    assert KEY not in str(exc.value)
+    assert "***" in str(exc.value)
+
+
+def test_search_asks_for_at_most_20_results(stub_server, client):
+    stub_server.routes["/search"] = search_response
+    client.search("stack", max_results=50)
+    assert stub_server.requests[0]["json"]["max_results"] == 20
+
+
+def test_result_without_a_score_does_not_crash(stub_server, client):
+    stub_server.routes["/search"] = lambda r: (200, {}, {"results": [
+        {"url": "https://a.example", "title": "A", "content": "text"}]})
+    assert client.search("stack")[0].score == 0.0
+
+
+def test_unreadable_200_reply_is_a_tavily_error_and_stays_counted(stub_server, client, budget):
+    stub_server.routes["/search"] = (200, {"Content-Type": "text/html"}, "<html>portal</html>")
+    with pytest.raises(TavilyError, match="unreadable"):
+        client.search("stack")
+    assert budget.used == 1  # Tavily may have charged it, so keep the reservation
+
+
+def test_timeout_after_sending_keeps_the_worst_case_counted(stub_server, budget):
+    import time
+
+    def slow(request):
+        time.sleep(1.0)
+        return search_response(request)
+
+    stub_server.routes["/search"] = slow
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, timeout=0.2,
+                          sleep=RecordingSleep())
+    with pytest.raises(TavilyError, match="may have been charged"):
+        client.search("stack", search_depth="advanced")
+    assert budget.used == 2
+    assert len(stub_server.requests) == 1  # never retried: that could double-charge
+
+
+def test_crawl_gets_a_longer_timeout_than_search():
+    from ragsearch.web.tavily import CRAWL_TIMEOUT
+
+    assert CRAWL_TIMEOUT >= 150  # Tavily's own crawl timeout defaults to 150 s
+
+
+def test_crawl_rejects_a_non_positive_page_limit(client):
+    with pytest.raises(ValueError, match="max_pages"):
+        client.crawl("https://docs.example", max_pages=0)
