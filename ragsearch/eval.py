@@ -15,8 +15,6 @@ from pathlib import Path
 from ragsearch.embedder import Embedder
 from ragsearch.store import Store
 
-CHUNKS_PER_SOURCE = 5  # fetch extra chunks so k *distinct* sources are usually found
-
 
 class EvalError(ValueError):
     """Raised for a missing or malformed labelled dataset."""
@@ -63,8 +61,14 @@ def mean_reciprocal_rank(ranked: list[list[str]], expected: list[str]) -> float:
 
 
 def ranked_sources(query: str, embedder: Embedder, store: Store, k: int) -> list[str]:
-    """Top ``k`` distinct sources for ``query``, best first."""
-    results = store.search(embedder.embed([query])[0], k * CHUNKS_PER_SOURCE)
+    """Top ``k`` distinct sources for ``query``, best first.
+
+    Every chunk is ranked (search is brute force anyway), so one long document
+    can never crowd the other sources out of the top ``k``.
+    """
+    if not len(store):
+        return []
+    results = store.search(embedder.embed_query(query), len(store))
     unique = list(dict.fromkeys(r.item["source"] for r in results))
     return unique[:k]
 

@@ -117,3 +117,13 @@ def test_eval_cli_reports_bad_file(tmp_path, capsys):
     code = main(["eval", str(bad)], settings=Settings(data_dir=tmp_path, embedder="hash"))
     assert code == 1
     assert "expected_source" in capsys.readouterr().err
+
+
+def test_ranked_sources_finds_k_sources_even_when_one_document_dominates(tmp_path):
+    emb = HashEmbedder(dim=128)
+    store = Store(tmp_path, embedder_name=emb.name)
+    ingest([Document.from_text("big.md", "apple " * 400),  # 80 chunks of 5 words
+            Document.from_text("a.md", "apple pear"),
+            Document.from_text("b.md", "apple plum")], emb, store, chunk_size=5, overlap=0)
+    assert ranked_sources("apple", emb, store, k=3)[0] == "big.md"
+    assert len(ranked_sources("apple", emb, store, k=3)) == 3
