@@ -130,3 +130,52 @@ def test_make_embedder_builds_each_kind():
 def test_make_embedder_rejects_unknown_kind():
     with pytest.raises(ValueError, match="unknown"):
         make_embedder("word2vec")
+
+
+# --- queries vs documents, response validation ---------------------------------
+
+
+def embed_route(request):
+    inputs = request["json"]["input"]
+    return 200, {}, {"embeddings": [[3.0, 4.0, 0.0] for _ in inputs]}
+
+
+def test_hash_embedder_embeds_a_query_like_a_document():
+    emb = HashEmbedder(dim=32)
+    assert np.array_equal(emb.embed_query("a stack"), emb.embed(["a stack"])[0])
+
+
+def test_ollama_task_prefixes_are_added_to_documents_and_queries(stub_server):
+    stub_server.routes["/api/embed"] = embed_route
+    emb = OllamaEmbedder(host=stub_server.url, document_prefix="search_document: ",
+                         query_prefix="search_query: ")
+    emb.embed(["a stack is LIFO"])
+    vector = emb.embed_query("what is a stack")
+    assert [r["json"]["input"] for r in stub_server.requests] == [
+        ["search_document: a stack is LIFO"], ["search_query: what is a stack"]]
+    assert vector.shape == (3,)
+
+
+def test_make_embedder_uses_nomic_task_prefixes():
+    emb = make_embedder("ollama", model="nomic-embed-text")
+    assert (emb.document_prefix, emb.query_prefix) == ("search_document: ", "search_query: ")
+    other = make_embedder("ollama", model="all-minilm")
+    assert (other.document_prefix, other.query_prefix) == ("", "")
+
+
+def test_non_json_reply_is_an_embedding_error(stub_server):
+    stub_server.routes["/api/embed"] = (200, {"Content-Type": "text/html"}, "<html>hi</html>")
+    with pytest.raises(EmbeddingError, match="unreadable"):
+        OllamaEmbedder(host=stub_server.url).embed(["a"])
+
+
+def test_wrong_number_of_vectors_is_an_embedding_error(stub_server):
+    stub_server.routes["/api/embed"] = (200, {}, {"embeddings": [[1.0, 0.0]]})
+    with pytest.raises(EmbeddingError, match="2 texts"):
+        OllamaEmbedder(host=stub_server.url).embed(["a", "b"])
+
+
+def test_ollama_error_message_is_included(stub_server):
+    stub_server.routes["/api/embed"] = (404, {}, {"error": "model 'nope' not found"})
+    with pytest.raises(EmbeddingError, match="not found"):
+        OllamaEmbedder(model="nope", host=stub_server.url).embed(["a"])
