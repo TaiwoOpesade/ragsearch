@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ragsearch.config import Settings, load_settings, read_dotenv
+from ragsearch.config import ConfigError, Settings, load_settings, read_dotenv
 
 
 def test_defaults_suit_small_local_models():
@@ -103,3 +103,59 @@ def test_real_environment_variables_override_dotenv(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
     assert load_settings().tavily_api_key == "tvly-from-shell"
+
+
+# --- clear errors for bad values, tolerant .env parsing ---------------------------
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("TAVILY_MONTHLY_CAP", "abc"), ("TAVILY_MONTHLY_CAP", "800.5"),
+     ("TAVILY_MONTHLY_CAP", "-1"), ("WEB_FALLBACK_THRESHOLD", "0,5"),
+     ("WEB_FALLBACK_THRESHOLD", "nan"), ("EMBEDDER", "word2vec"),
+     ("INDEX_BACKEND", "annoy")],
+)
+def test_bad_values_raise_a_config_error_naming_the_variable(name, value):
+    with pytest.raises(ConfigError, match=name):
+        load_settings({name: value})
+
+
+def test_empty_values_fall_back_to_defaults():
+    settings = load_settings({"TAVILY_MONTHLY_CAP": "", "WEB_FALLBACK_THRESHOLD": "  ",
+                              "EMBEDDER": "", "GEN_MODEL": ""})
+    assert settings.tavily_monthly_cap == 800
+    assert settings.web_fallback_threshold == 0.5
+    assert settings.embedder == "ollama"
+    assert settings.gen_model == "llama3.2:3b"
+
+
+def test_values_are_stripped():
+    settings = load_settings({"EMBEDDER": "hash ", "TAVILY_API_KEY": " tvly-abc\n",
+                              "TAVILY_MONTHLY_CAP": " 100 "})
+    assert settings.embedder == "hash"
+    assert settings.tavily_api_key == "tvly-abc"
+    assert settings.tavily_monthly_cap == 100
+
+
+def test_config_error_is_a_value_error():
+    assert issubclass(ConfigError, ValueError)
+
+
+def test_dotenv_written_by_powershell_as_utf16_is_read(tmp_path):
+    path = tmp_path / ".env"
+    path.write_bytes("TAVILY_API_KEY=tvly-abc\r\n".encode("utf-16"))  # BOM + UTF-16 LE
+    assert read_dotenv(path) == {"TAVILY_API_KEY": "tvly-abc"}
+
+
+def test_dotenv_inline_comments_are_stripped_unless_quoted(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("TAVILY_MONTHLY_CAP=800  # spare 200\nGEN_MODEL='a # b'\n",
+                    encoding="utf-8")
+    assert read_dotenv(path) == {"TAVILY_MONTHLY_CAP": "800", "GEN_MODEL": "a # b"}
+
+
+def test_unreadable_dotenv_is_a_config_error(tmp_path):
+    path = tmp_path / ".env"
+    path.write_bytes(b"KEY=\xff\xfe\xfa\x80 bad")
+    with pytest.raises(ConfigError, match=".env"):
+        read_dotenv(path)

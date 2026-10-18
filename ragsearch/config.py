@@ -1,10 +1,25 @@
 """Settings read from environment variables (and an optional ``.env`` file), with
-defaults that suit small local models."""
+defaults that suit small local models.
 
+Every value is stripped, an empty value means "use the default", and a bad value
+raises ``ConfigError`` naming the variable, so a typo never becomes a traceback.
+"""
+
+import math
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
+
+T = TypeVar("T")
+
+INDEX_BACKENDS = ("numpy", "faiss")
+EMBEDDERS = ("ollama", "hash")
+
+
+class ConfigError(ValueError):
+    """Raised for a setting that cannot be used, with the variable's name."""
 
 
 @dataclass(frozen=True)
@@ -25,30 +40,70 @@ def _with_scheme(host: str) -> str:
     return host if "://" in host else f"http://{host}"
 
 
-INDEX_BACKENDS = ("numpy", "faiss")
-EMBEDDERS = ("ollama", "hash")
+def _decode_dotenv(raw: bytes, path: Path) -> str:
+    try:
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):  # PowerShell 5.1 '>' writes UTF-16
+            return raw.decode("utf-16")
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as err:
+        raise ConfigError(f"{path} is not UTF-8 text; save it as UTF-8") from err
 
 
 def read_dotenv(path: str | Path) -> dict[str, str]:
     """Parse simple ``KEY=value`` lines from a ``.env`` file (missing file -> ``{}``).
 
-    Blank lines, ``#`` comments, lines without ``=`` and empty values are skipped;
-    matching single or double quotes around a value are removed.
+    Blank lines, ``#`` comments, lines without ``=`` and empty values are skipped.
+    Matching quotes around a value are removed; an unquoted value ends at `` #``.
     """
     path = Path(path)
     if not path.is_file():
         return {}
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
+    for line in _decode_dotenv(path.read_bytes(), path).splitlines():
         key, sep, value = line.partition("=")
         key, value = key.strip(), value.strip()
         if not sep or not key or key.startswith("#"):
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
             value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].rstrip()
         if value:
             values[key] = value
     return values
+
+
+def _setting(env: Mapping[str, str], name: str, default: T, parse: Callable[[str], T]) -> T:
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return parse(raw)
+    except ValueError as err:
+        raise ConfigError(f"{name}={raw!r} is not valid: {err}") from None
+
+
+def _choice(options: tuple[str, ...]) -> Callable[[str], str]:
+    def parse(raw: str) -> str:
+        if raw.lower() not in options:
+            raise ValueError(f"expected one of {', '.join(options)}")
+        return raw.lower()
+
+    return parse
+
+
+def _cap(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise ValueError("must be 0 or more")
+    return value
+
+
+def _threshold(raw: str) -> float:
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError("must be a finite number")
+    return value
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -59,23 +114,17 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """
     if env is None:
         env = {**read_dotenv(".env"), **os.environ}
-    default = Settings()
-    backend = env.get("INDEX_BACKEND", default.index_backend).lower()
-    if backend not in INDEX_BACKENDS:
-        raise ValueError(f"INDEX_BACKEND must be one of {INDEX_BACKENDS}, got {backend!r}")
-    embedder = env.get("EMBEDDER", default.embedder).lower()
-    if embedder not in EMBEDDERS:
-        raise ValueError(f"EMBEDDER must be one of {EMBEDDERS}, got {embedder!r}")
+    d = Settings()
     return Settings(
-        ollama_host=_with_scheme(env.get("OLLAMA_HOST", default.ollama_host)),
-        embed_model=env.get("EMBED_MODEL", default.embed_model),
-        gen_model=env.get("GEN_MODEL", default.gen_model),
-        data_dir=Path(env.get("DATA_DIR", str(default.data_dir))),
-        embedder=embedder,
-        index_backend=backend,
-        tavily_monthly_cap=int(env.get("TAVILY_MONTHLY_CAP", default.tavily_monthly_cap)),
-        web_fallback_threshold=float(
-            env.get("WEB_FALLBACK_THRESHOLD", default.web_fallback_threshold)
+        ollama_host=_with_scheme(_setting(env, "OLLAMA_HOST", d.ollama_host, str)),
+        embed_model=_setting(env, "EMBED_MODEL", d.embed_model, str),
+        gen_model=_setting(env, "GEN_MODEL", d.gen_model, str),
+        data_dir=_setting(env, "DATA_DIR", d.data_dir, Path),
+        embedder=_setting(env, "EMBEDDER", d.embedder, _choice(EMBEDDERS)),
+        index_backend=_setting(env, "INDEX_BACKEND", d.index_backend, _choice(INDEX_BACKENDS)),
+        tavily_monthly_cap=_setting(env, "TAVILY_MONTHLY_CAP", d.tavily_monthly_cap, _cap),
+        web_fallback_threshold=_setting(
+            env, "WEB_FALLBACK_THRESHOLD", d.web_fallback_threshold, _threshold
         ),
-        tavily_api_key=env.get("TAVILY_API_KEY") or None,
+        tavily_api_key=_setting(env, "TAVILY_API_KEY", None, str),
     )
