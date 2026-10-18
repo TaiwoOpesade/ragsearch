@@ -99,3 +99,34 @@ def test_web_failure_falls_back_to_local_results_with_warning(store, emb, web,
         hits = hybrid_search("glucose", emb, store, web=web)
     assert [h.origin for h in hits] == ["local"]
     assert "web search failed" in caplog.text
+
+
+# --- no duplicates, no overwriting full pages, visible web failures --------------
+
+
+def test_full_page_is_never_replaced_by_a_web_snippet(store, emb, web):
+    full_page = " ".join(["photosynthesis glucose chloroplast light"] * 150)  # 600 words
+    ingest([Document.from_text("https://web.example/photo", full_page)], emb, store)
+    before = store.sources["https://web.example/photo"]["chunks"]
+    assert before > 1
+
+    hybrid_search("unrelated question about football", emb, store, web=web, persist=True)
+
+    assert store.sources["https://web.example/photo"]["chunks"] == before
+    assert "https://web.example/other" in store.sources  # new URLs are still saved
+
+
+def test_a_url_already_in_local_results_is_not_repeated_from_the_web(store, emb, web):
+    ingest([Document.from_text("https://web.example/photo", WEB_TEXT)], emb, store)
+    hits = hybrid_search("glucose", emb, store, k=5, web=web, threshold=1.01)
+    sources = [h.source for h in hits]
+    assert sources.count("https://web.example/photo") == 1
+    assert next(h for h in hits if h.source == "https://web.example/photo").origin == "local"
+
+
+def test_web_failures_are_reported_through_warnings(store, emb, web, stub_server):
+    stub_server.routes["/search"] = (500, {}, {"detail": {"error": "boom"}})
+    warnings: list[str] = []
+    hybrid_search("glucose", emb, store, web=web, warnings=warnings)
+    assert len(warnings) == 1
+    assert "web search failed" in warnings[0]

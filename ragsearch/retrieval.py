@@ -43,8 +43,14 @@ def hybrid_search(
     web: WebSearcher | None = None,
     threshold: float = 0.5,
     persist: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[Hit]:
-    query_vector = embedder.embed([query])[0]
+    """Local results, plus labelled web results when the best local score is weak.
+
+    A web failure never fails the search: it is logged and, if ``warnings`` is
+    given, appended to it so callers can tell the user.
+    """
+    query_vector = embedder.embed_query(query)
     hits = [
         Hit(r.score, r.item["source"], r.item["text"], "local")
         for r in store.search(query_vector, k)
@@ -55,8 +61,13 @@ def hybrid_search(
     try:
         results = [r for r in web.search(query, max_results=k) if r.content.strip()]
     except (TavilyError, BudgetExceeded) as err:
-        log.warning("web search failed, using local results only: %s", err)
+        message = f"web search failed, using local results only: {err}"
+        log.warning(message)
+        if warnings is not None:
+            warnings.append(message)
         return hits
+    local_sources = {h.source for h in hits}
+    results = [r for r in results if r.url not in local_sources]  # no duplicates
     if not results:
         return hits
 
@@ -67,5 +78,7 @@ def hybrid_search(
         for r, score in zip(results, scores, strict=True)
     ]
     if persist:
-        ingest([Document.from_text(r.url, r.content) for r in results], embedder, store)
+        # Never let a short snippet replace a page that is already indexed in full.
+        new = [r for r in results if r.url not in store.sources]
+        ingest([Document.from_text(r.url, r.content) for r in new], embedder, store)
     return sorted(hits, key=lambda h: h.score, reverse=True)[:k]
