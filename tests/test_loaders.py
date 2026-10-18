@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from ragsearch.loaders import Document, LoaderError, load_documents
+from ragsearch.loaders import Document, LoaderError, clean_text, load_documents
 
 
 def read_all(doc: Document) -> str:
@@ -101,3 +101,45 @@ def test_document_from_text_wraps_in_memory_text():
     doc = Document.from_text("https://example.com", "page text")
     assert doc.source == "https://example.com"
     assert list(doc.segments()) == ["page text"]
+
+
+# --- end-of-file handling, encodings, PDF text cleaning ------------------------
+
+
+def test_file_without_trailing_newline_keeps_its_last_word(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_bytes(b"The password for the lab wifi is tangerine")  # no final newline
+    [doc] = load_documents(path)
+    assert list(doc.segments()) == ["The password for the lab wifi is tangerine"]
+
+
+def test_small_segments_lose_no_words_without_a_final_newline(tmp_path):
+    words = [f"w{i}" for i in range(40)]
+    path = tmp_path / "n.txt"
+    path.write_text(" ".join(words), encoding="utf-8")  # no final newline
+    [doc] = load_documents(path, segment_chars=50)
+    segments = list(doc.segments())
+    assert " ".join(segments).split() == words
+    assert all(len(s) <= 50 for s in segments)
+
+
+def test_windows_1252_text_is_read_with_a_warning(tmp_path, caplog):
+    path = tmp_path / "ansi.txt"
+    path.write_bytes("Café notes – smart “quotes”".encode("cp1252"))
+    [doc] = load_documents(path)
+    with caplog.at_level(logging.WARNING):
+        assert read_all(doc) == "Café notes – smart “quotes”"
+    assert "Windows-1252" in caplog.text
+
+
+def test_binary_file_with_a_text_extension_is_rejected(tmp_path):
+    path = tmp_path / "image.txt"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    [doc] = load_documents(path)
+    with pytest.raises(LoaderError, match="image.txt"):
+        read_all(doc)
+
+
+def test_clean_text_replaces_lone_surrogates():
+    assert clean_text("integral \ud835 over x") == "integral � over x"
+    assert clean_text("plain") == "plain"
