@@ -32,7 +32,7 @@ def test_single_file_source_is_absolute_posix_path(tmp_path):
 
 def test_utf8_bom_is_stripped(tmp_path):
     path = tmp_path / "bom.txt"
-    path.write_bytes("﻿hello".encode())
+    path.write_bytes(b"\xef\xbb\xbfhello")  # UTF-8 byte order mark + text
     [doc] = load_documents(path)
     assert read_all(doc) == "hello"
 
