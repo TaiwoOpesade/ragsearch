@@ -3,19 +3,19 @@
 import argparse
 import logging
 import sys
-from collections.abc import Iterable
 from pathlib import Path
 
 from ragsearch.config import Settings, load_settings
 from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
 from ragsearch.index import index_backend
-from ragsearch.loaders import Document, load_documents
+from ragsearch.loaders import load_documents
 from ragsearch.pipeline import ingest
 from ragsearch.retrieval import hybrid_search
 from ragsearch.store import Store, StoreError
-from ragsearch.web.budget import BudgetExceeded, CreditBudget
-from ragsearch.web.fetcher import Fetcher, FetchError
-from ragsearch.web.tavily import TavilyClient, TavilyError
+from ragsearch.web.budget import BudgetExceeded
+from ragsearch.web.fetcher import FetchError
+from ragsearch.web.sources import make_tavily, web_documents
+from ragsearch.web.tavily import TavilyError
 
 SNIPPET_CHARS = 160
 ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded)
@@ -52,24 +52,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def make_tavily(settings: Settings, data_dir: Path) -> TavilyClient:
-    budget = CreditBudget(data_dir / "tavily_usage.json", cap=settings.tavily_monthly_cap)
-    return TavilyClient(api_key=settings.tavily_api_key, budget=budget)
-
-
-def _web_documents(args: argparse.Namespace, settings: Settings, data_dir: Path
-                   ) -> Iterable[Document]:
-    if args.provider == "tavily":
-        client = make_tavily(settings, data_dir)
-        pages = (client.crawl(args.path, args.max_pages, args.max_depth) if args.crawl
-                 else client.extract([args.path]))
-    else:
-        fetcher = Fetcher()
-        pages = (fetcher.crawl(args.path, args.max_pages, args.max_depth) if args.crawl
-                 else [fetcher.fetch(args.path)])
-    return (Document.from_text(page.url, page.text) for page in pages)
-
-
 def _snippet(text: str) -> str:
     text = " ".join(text.split())
     return text if len(text) <= SNIPPET_CHARS else text[: SNIPPET_CHARS - 3] + "..."
@@ -77,7 +59,10 @@ def _snippet(text: str) -> str:
 
 def _cmd_ingest(args, settings: Settings, embedder: Embedder, store: Store) -> None:
     if args.path.startswith(("http://", "https://")):
-        documents = _web_documents(args, settings, store.data_dir)
+        documents = web_documents(
+            args.path, settings, store.data_dir, crawl=args.crawl,
+            max_pages=args.max_pages, max_depth=args.max_depth, provider=args.provider,
+        )
     else:
         documents = load_documents(args.path)
     report = ingest(documents, embedder, store)
