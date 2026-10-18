@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sizes", type=int, nargs="+", default=[1_000, 10_000, 100_000])
     parser.add_argument("--dim", type=int, default=768)
-    parser.add_argument("--queries", type=int, default=50)
+    parser.add_argument("--queries", type=int, default=200)
     parser.add_argument("--output", type=Path, default=Path("docs/benchmarks.md"))
     args = parser.parse_args(argv)
 
