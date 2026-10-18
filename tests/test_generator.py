@@ -1,7 +1,9 @@
 import pytest
 
 from ragsearch.generator import (
+    MAX_CONTEXT,
     NO_ANSWER,
+    SYSTEM_PROMPT,
     GenerationError,
     OllamaGenerator,
     build_messages,
@@ -74,3 +76,50 @@ def test_ollama_generator_unreachable_is_a_clear_error():
     gen = OllamaGenerator(host="http://127.0.0.1:1", timeout=1)
     with pytest.raises(GenerationError, match="Ollama"):
         gen.generate("q", HITS)
+
+
+# --- context sizing and unreadable replies ---------------------------------------
+
+
+def many_hits(n, chars):
+    return [Hit(1.0 - i / 100, f"notes/{i}.md", "word " * (chars // 5), "local") for i in range(n)]
+
+
+def test_small_prompt_uses_the_default_context(stub_server):
+    stub_server.routes["/api/chat"] = chat_ok
+    OllamaGenerator(host=stub_server.url).generate("q", HITS)
+    assert stub_server.requests[0]["json"]["options"]["num_ctx"] == 4096
+
+
+def test_context_grows_so_twenty_sources_are_not_truncated(stub_server):
+    stub_server.routes["/api/chat"] = chat_ok
+    OllamaGenerator(host=stub_server.url).generate("q", many_hits(20, 1300))
+    body = stub_server.requests[0]["json"]
+    prompt_chars = sum(len(m["content"]) for m in body["messages"])
+    num_ctx = body["options"]["num_ctx"]
+    assert num_ctx > 4096
+    assert num_ctx * 3 >= prompt_chars  # room for the whole prompt at ~3 chars/token
+    assert num_ctx % 1024 == 0
+
+
+def test_sources_that_cannot_fit_are_dropped_from_the_end(stub_server):
+    stub_server.routes["/api/chat"] = chat_ok
+    OllamaGenerator(host=stub_server.url).generate("q", many_hits(60, 2000))
+    body = stub_server.requests[0]["json"]
+    user = body["messages"][-1]["content"]
+    assert body["options"]["num_ctx"] <= MAX_CONTEXT
+    assert "[1] (notes/0.md)" in user  # the best sources and the rules always survive
+    assert "[60]" not in user
+    assert body["messages"][0]["content"] == SYSTEM_PROMPT
+
+
+def test_unreadable_reply_is_a_generation_error(stub_server):
+    stub_server.routes["/api/chat"] = (200, {"Content-Type": "text/html"}, "<html></html>")
+    with pytest.raises(GenerationError, match="unreadable"):
+        OllamaGenerator(host=stub_server.url).generate("q", HITS)
+
+
+def test_error_field_in_a_200_reply_is_a_generation_error(stub_server):
+    stub_server.routes["/api/chat"] = (200, {}, {"error": "model ran out of memory"})
+    with pytest.raises(GenerationError, match="out of memory"):
+        OllamaGenerator(host=stub_server.url).generate("q", HITS)
