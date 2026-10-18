@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ragsearch.config import Settings, load_settings
+from ragsearch.config import Settings, load_settings, read_dotenv
 
 
 def test_defaults_suit_small_local_models():
@@ -71,3 +71,35 @@ def test_embedder_defaults_to_ollama_and_can_be_hash():
     assert load_settings({"EMBEDDER": "hash"}).embedder == "hash"
     with pytest.raises(ValueError, match="EMBEDDER"):
         load_settings({"EMBEDDER": "word2vec"})
+
+
+def test_read_dotenv_parses_simple_key_value_lines(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(
+        "# comment\n\nTAVILY_API_KEY=tvly-abc\nGEN_MODEL = 'qwen2.5:3b'\n"
+        'DATA_DIR="my data"\nEMPTY=\nnot a setting\n',
+        encoding="utf-8",
+    )
+    assert read_dotenv(path) == {
+        "TAVILY_API_KEY": "tvly-abc",
+        "GEN_MODEL": "qwen2.5:3b",
+        "DATA_DIR": "my data",
+    }
+
+
+def test_read_dotenv_missing_file_is_empty(tmp_path):
+    assert read_dotenv(tmp_path / ".env") == {}
+
+
+def test_load_settings_reads_dotenv_in_current_directory(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("TAVILY_API_KEY=tvly-from-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    assert load_settings().tavily_api_key == "tvly-from-file"
+
+
+def test_real_environment_variables_override_dotenv(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("TAVILY_API_KEY=tvly-from-file\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
+    assert load_settings().tavily_api_key == "tvly-from-shell"

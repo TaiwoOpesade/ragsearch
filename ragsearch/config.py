@@ -1,4 +1,5 @@
-"""Settings read from environment variables, with defaults that suit small local models."""
+"""Settings read from environment variables (and an optional ``.env`` file), with
+defaults that suit small local models."""
 
 import os
 from collections.abc import Mapping
@@ -28,9 +29,36 @@ INDEX_BACKENDS = ("numpy", "faiss")
 EMBEDDERS = ("ollama", "hash")
 
 
+def read_dotenv(path: str | Path) -> dict[str, str]:
+    """Parse simple ``KEY=value`` lines from a ``.env`` file (missing file -> ``{}``).
+
+    Blank lines, ``#`` comments, lines without ``=`` and empty values are skipped;
+    matching single or double quotes around a value are removed.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or key.startswith("#"):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if value:
+            values[key] = value
+    return values
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
-    """Build ``Settings`` from ``env`` (defaults to ``os.environ``)."""
-    env = os.environ if env is None else env
+    """Build ``Settings`` from ``env``.
+
+    By default that is ``.env`` in the current directory overlaid with the real
+    environment, so a variable set in your shell always wins over the file.
+    """
+    if env is None:
+        env = {**read_dotenv(".env"), **os.environ}
     default = Settings()
     backend = env.get("INDEX_BACKEND", default.index_backend).lower()
     if backend not in INDEX_BACKENDS:

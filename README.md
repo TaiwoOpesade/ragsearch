@@ -77,7 +77,13 @@ You need Python 3.10 or newer.
    pip install -r requirements.txt
    ```
 
-3. Optional: for web search and Tavily crawling, create a free key at [tavily.com](https://tavily.com) (1,000 credits a month, no card) and set it in your shell. ragsearch reads settings from the environment only; `.env.example` lists them all.
+3. Optional: for web search and Tavily crawling, create a free key at [tavily.com](https://tavily.com) (1,000 credits a month, no card) and put it in a `.env` file in the project folder (gitignored; `.env.example` lists every setting):
+
+   ```text
+   TAVILY_API_KEY=tvly-...
+   ```
+
+   Or set it in your shell, which wins over `.env`:
 
    ```powershell
    $env:TAVILY_API_KEY = "tvly-..."     # bash: export TAVILY_API_KEY="tvly-..."
@@ -184,7 +190,7 @@ Errors map to HTTP codes: 503 when Ollama is unreachable, 502 for Tavily errors,
 
 ## Configuration
 
-All settings come from environment variables.
+Settings come from environment variables, or from a `.env` file in the folder you run ragsearch from. A variable set in your shell overrides the file.
 
 | Variable | Default | Meaning |
 |---|---|---|
