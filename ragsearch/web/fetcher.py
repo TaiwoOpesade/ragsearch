@@ -1,13 +1,16 @@
 """A free, polite fallback crawler: requests for HTTP, trafilatura for main-text extraction.
 
 Rules it always follows:
-* obeys robots.txt (a server error on robots.txt means "do not crawl");
+* obeys robots.txt using RFC 9309 matching (``robots.py``); a robots.txt that is
+  rate-limited or erroring means "do not crawl", and redirects to it are followed;
 * never leaves the host it started on, including via redirects;
 * stops after ``max_pages`` requests and ``max_depth`` link hops;
-* waits at least one second between any two requests.
+* waits at least one second between the end of one response and the next request.
 """
 
+import codecs
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -15,16 +18,20 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import NamedTuple
 from urllib.parse import urldefrag, urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 import requests
 import trafilatura
+
+from ragsearch.web.robots import RobotsRules
 
 log = logging.getLogger(__name__)
 
 USER_AGENT = "ragsearch/0.1 (local research crawler)"
 MIN_DELAY = 1.0
 MAX_BYTES = 5_000_000
+MAX_ROBOTS_REDIRECTS = 5  # RFC 9309 asks crawlers to follow at least five
+
+_CHARSET = re.compile(r"charset=[\"']?([\w.:-]+)", re.IGNORECASE)
 
 
 class FetchError(RuntimeError):
@@ -43,6 +50,15 @@ class _Response(NamedTuple):
     body: bytes
     location: str | None
 
+    def charset(self) -> str | None:
+        match = _CHARSET.search(self.content_type)
+        if not match:
+            return None
+        try:
+            return codecs.lookup(match.group(1)).name
+        except LookupError:
+            return None
+
 
 class _LinkParser(HTMLParser):
     def __init__(self) -> None:
@@ -57,6 +73,17 @@ class _LinkParser(HTMLParser):
 
 def _host(url: str) -> str:
     return urlsplit(url).netloc.lower()
+
+
+def _resolve(base: str, link: str) -> str | None:
+    """Absolute, fragment-free http(s) URL for ``link``, or None if it is unusable."""
+    try:
+        target = urldefrag(urljoin(base, link.strip())).url
+        scheme = urlsplit(target).scheme
+    except ValueError:  # e.g. an unbalanced IPv6 bracket: "http://[oops"
+        log.info("Skipping malformed link %r on %s", link, base)
+        return None
+    return target if scheme in ("http", "https") else None
 
 
 class Fetcher:
@@ -75,7 +102,7 @@ class Fetcher:
         self._delay, self._timeout, self._max_bytes = delay, timeout, max_bytes
         self._sleep, self._clock = sleep, clock
         self._last_request: float | None = None
-        self._robots: dict[str, RobotFileParser] = {}
+        self._robots: dict[str, RobotsRules] = {}
 
     def fetch(self, url: str) -> Page:
         """Fetch one page (following same-host redirects) and return its main text."""
@@ -87,7 +114,9 @@ class Fetcher:
     def crawl(self, start_url: str, max_pages: int = 30, max_depth: int = 2) -> Iterator[Page]:
         """Breadth-first crawl of ``start_url``'s host, yielding pages with text."""
         host = _host(start_url)
-        start = urldefrag(start_url).url
+        start = _resolve(start_url, start_url)
+        if start is None:
+            raise FetchError(f"Not an http(s) URL: {start_url!r}")
         queue, seen, requests_made = deque([(start, 0)]), {start}, 0
         while queue and requests_made < max_pages:
             url, depth = queue.popleft()
@@ -101,56 +130,68 @@ class Fetcher:
                 log.warning("Skipping %s: %s", url, err)
                 continue
 
-            targets: list[tuple[str, int]] = []
+            links: list[tuple[str, int]] = []
             if response.location:  # redirect: same depth, still same-host only
-                targets = [(urljoin(url, response.location), depth)]
+                links = [(response.location, depth)]
             elif response.status != 200:
                 log.warning("Skipping %s: HTTP %d", url, response.status)
             elif "html" not in response.content_type:
                 log.info("Skipping %s: not HTML (%s)", url, response.content_type)
             else:
-                html = response.body.decode("utf-8", errors="replace")
-                text = trafilatura.extract(html, url=url)
+                charset = response.charset()
+                # With no declared charset, give trafilatura the bytes so it can detect it.
+                html = response.body.decode(charset, errors="replace") if charset else None
+                text = trafilatura.extract(html if html is not None else response.body, url=url)
                 if text:
                     yield Page(url=url, text=text)
                 if depth < max_depth:
-                    targets = [(urljoin(url, link), depth + 1) for link in _links(html)]
+                    source = html or response.body.decode("utf-8", errors="replace")
+                    links = [(link, depth + 1) for link in _links(source)]
 
-            for target, target_depth in targets:
-                target = urldefrag(target).url
-                if target in seen or urlsplit(target).scheme not in ("http", "https"):
+            for link, link_depth in links:
+                target = _resolve(url, link)
+                if target is None or target in seen:
                     continue
                 if _host(target) != host:
                     log.info("Not following %s: different host", target)
                     continue
                 seen.add(target)
-                queue.append((target, target_depth))
+                queue.append((target, link_depth))
 
     def _allowed(self, url: str) -> bool:
         parts = urlsplit(url)
         root = f"{parts.scheme}://{parts.netloc}"
         if root not in self._robots:
-            parser = RobotFileParser()
+            self._robots[root] = self._fetch_robots(root + "/robots.txt")
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        return self._robots[root].allowed(path)
+
+    def _fetch_robots(self, url: str) -> RobotsRules:
+        for _ in range(MAX_ROBOTS_REDIRECTS + 1):
             try:
-                response = self._get(root + "/robots.txt")
-                status = response.status
+                response = self._get(url)
             except FetchError:
-                status = 503
-            if status in (401, 403) or status >= 500:
-                parser.disallow_all = True  # be conservative when unsure
-            elif status >= 300:
-                parser.allow_all = True  # no robots.txt: crawling is allowed
-            else:
-                parser.parse(response.body.decode("utf-8", errors="replace").splitlines())
-            self._robots[root] = parser
-        return self._robots[root].can_fetch(USER_AGENT, url)
+                return RobotsRules.disallow_all()  # unreachable: be conservative
+            if response.location:
+                target = _resolve(url, response.location)
+                if target is None:
+                    return RobotsRules.allow_all()
+                url = target
+                continue
+            status = response.status
+            if status == 200:
+                body = response.body.decode(response.charset() or "utf-8", errors="replace")
+                return RobotsRules.parse(body, USER_AGENT)
+            if status in (401, 403, 429) or status >= 500:
+                return RobotsRules.disallow_all()  # forbidden, rate-limited or erroring
+            return RobotsRules.allow_all()  # 404 and other 4xx: no robots.txt
+        return RobotsRules.allow_all()  # too many redirects: treated as unavailable (RFC 9309)
 
     def _wait_politely(self) -> None:
         if self._last_request is not None:
             remaining = self._delay - (self._clock() - self._last_request)
             if remaining > 0:
                 self._sleep(remaining)
-        self._last_request = self._clock()
 
     def _get(self, url: str) -> _Response:
         self._wait_politely()
@@ -169,6 +210,9 @@ class Fetcher:
                                  bytes(body), location)
         except requests.RequestException as err:
             raise FetchError(f"request failed: {err}") from err
+        finally:
+            # Measure the gap from when this response finished, not when it started.
+            self._last_request = self._clock()
 
 
 def _links(html: str) -> list[str]:

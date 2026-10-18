@@ -148,3 +148,69 @@ def test_oversized_page_is_skipped(site, fake_time):
 def test_unreachable_host_raises_fetch_error(fake_time):
     with pytest.raises(FetchError):
         make_fetcher(fake_time, timeout=1).fetch("http://127.0.0.1:1/")
+
+
+# --- robots.txt edge cases, encodings, bad links, politeness -------------------
+
+
+def test_longest_robots_rule_is_obeyed_during_a_crawl(stub_server, fake_time):
+    stub_server.routes.update({
+        "/robots.txt": (200, {}, "User-agent: *\nAllow: /\nDisallow: /private\n"),
+        "/": (200, HTML, page("Home", "Home page text.", ["/private/secret", "/ok"])),
+        "/ok": (200, HTML, page("OK", "Allowed page text.")),
+        "/private/secret": (200, HTML, page("Secret", "must never be fetched")),
+    })
+    list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=2))
+    assert "/ok" in stub_server.paths
+    assert "/private/secret" not in stub_server.paths
+
+
+def test_redirected_robots_txt_is_followed(stub_server, fake_time):
+    stub_server.routes.update({
+        "/robots.txt": (301, {"Location": "/real-robots.txt"}, ""),
+        "/real-robots.txt": (200, {}, "User-agent: *\nDisallow: /\n"),
+        "/": (200, HTML, page("Home", "must never be fetched")),
+    })
+    assert list(make_fetcher(fake_time).crawl(stub_server.url + "/")) == []
+    assert "/" not in stub_server.paths
+
+
+def test_rate_limited_robots_txt_means_do_not_crawl(stub_server, fake_time):
+    stub_server.routes.update({
+        "/robots.txt": (429, {"Retry-After": "60"}, "slow down"),
+        "/": (200, HTML, page("Home", "must never be fetched")),
+    })
+    assert list(make_fetcher(fake_time).crawl(stub_server.url + "/")) == []
+    assert stub_server.paths == ["/robots.txt"]
+
+
+def test_non_utf8_page_is_decoded_using_its_charset(stub_server, fake_time):
+    html = page("Menu", "Crème brûlée at the café is delicious.")
+    stub_server.routes["/"] = (200, {"Content-Type": "text/html; charset=iso-8859-1"},
+                               html.encode("latin-1"))
+    text = make_fetcher(fake_time).fetch(stub_server.url + "/").text
+    assert "café" in text
+    assert "�" not in text
+
+
+def test_malformed_link_is_skipped_and_the_crawl_continues(stub_server, fake_time):
+    stub_server.routes.update({
+        "/": (200, HTML, page("Home", "Home page text.", ["http://[oops", "/good"])),
+        "/good": (200, HTML, page("Good", "The good page text.")),
+    })
+    pages = list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
+    assert [p.url.removeprefix(stub_server.url) for p in pages] == ["/", "/good"]
+
+
+def test_politeness_gap_is_measured_from_the_end_of_a_slow_response(stub_server, fake_time):
+    def slow_home(request):
+        fake_time.now += 1.5  # the server takes 1.5 s to answer
+        return 200, HTML, page("Home", "Home page text.", ["/next"])
+
+    stub_server.routes.update({
+        "/": slow_home,
+        "/next": (200, HTML, page("Next", "Next page text.")),
+    })
+    list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
+    # robots.txt, then a full 1 s wait before "/", then a full 1 s wait before "/next"
+    assert fake_time.sleeps == [1.0, 1.0]
