@@ -1,0 +1,5 @@
+Queues
+
+A queue is a first in first out (FIFO) data structure. Items join at the rear
+and leave from the front, like people waiting in line. Queues are used for
+printer spooling, CPU scheduling and buffering data between processes.

@@ -12,8 +12,20 @@ import json
 import re
 import urllib.error
 import urllib.request
+from typing import Protocol
 
 import numpy as np
+
+
+class Embedder(Protocol):
+    """Anything with a ``name``, a vector ``dim`` and a batch ``embed`` method."""
+
+    name: str
+
+    @property
+    def dim(self) -> int: ...
+
+    def embed(self, texts: list[str]) -> np.ndarray: ...
 
 
 class EmbeddingError(RuntimeError):
