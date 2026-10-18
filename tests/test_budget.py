@@ -87,3 +87,62 @@ def test_corrupt_usage_file_refuses_rather_than_resetting(tmp_path):
     (tmp_path / "tavily_usage.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(BudgetExceeded, match="usage file"):
         budget(tmp_path).ensure_available(1)
+
+
+# --- reservations: check-and-book atomically, then settle ---------------------
+
+
+def test_reserve_books_credits_immediately(tmp_path):
+    b = budget(tmp_path, cap=10)
+    assert b.reserve(3) == 3
+    assert budget(tmp_path, cap=10).used == 3  # visible to other instances at once
+
+
+def test_reserve_refuses_beyond_the_cap_and_books_nothing(tmp_path):
+    b = budget(tmp_path, cap=10)
+    b.record(9)
+    with pytest.raises(BudgetExceeded, match=r"9/10"):
+        b.reserve(2)
+    assert b.used == 9
+
+
+def test_adjust_settles_a_reservation_to_the_real_cost(tmp_path):
+    b = budget(tmp_path, cap=10)
+    b.reserve(9)  # worst case for a crawl
+    b.adjust(3 - 9)  # Tavily actually charged 3
+    assert b.used == 3
+
+
+def test_adjust_never_goes_below_zero(tmp_path):
+    b = budget(tmp_path, cap=10)
+    b.adjust(-5)
+    assert b.used == 0
+
+
+def test_concurrent_reservations_never_exceed_the_cap(tmp_path):
+    import threading
+
+    b = budget(tmp_path, cap=10)
+    granted, refused = [], []
+
+    def worker():
+        try:
+            granted.append(b.reserve(1))
+        except BudgetExceeded:
+            refused.append(True)
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(granted) == 10
+    assert len(refused) == 10
+    assert b.used == 10
+
+
+def test_usage_file_is_written_atomically_with_no_leftovers(tmp_path):
+    b = budget(tmp_path)
+    b.record(1)
+    b.reserve(2)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["tavily_usage.json"]
