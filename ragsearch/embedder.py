@@ -30,6 +30,7 @@ class HashEmbedder:
 
     def __init__(self, dim: int = 256):
         self.dim = dim
+        self.name = f"hash-{dim}"
 
     def embed(self, texts: list[str]) -> np.ndarray:
         vectors = np.zeros((len(texts), self.dim), dtype=np.float32)
@@ -54,6 +55,7 @@ class OllamaEmbedder:
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
+        self.name = f"ollama-{model}"
         self._dim: int | None = None
 
     @property
@@ -89,3 +91,17 @@ class OllamaEmbedder:
         vectors = np.asarray(payload["embeddings"], dtype=np.float32)
         self._dim = vectors.shape[1]
         return _normalise(vectors)
+
+
+def make_embedder(
+    kind: str,
+    host: str = "http://localhost:11434",
+    model: str = "nomic-embed-text",
+    hash_dim: int = 512,
+) -> HashEmbedder | OllamaEmbedder:
+    """Build an embedder by name: ``"hash"`` (offline) or ``"ollama"``."""
+    if kind == "hash":
+        return HashEmbedder(dim=hash_dim)
+    if kind == "ollama":
+        return OllamaEmbedder(model=model, host=host)
+    raise ValueError(f"unknown embedder {kind!r}; expected 'hash' or 'ollama'")

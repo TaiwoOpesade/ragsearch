@@ -5,7 +5,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import numpy as np
 import pytest
 
-from ragsearch.embedder import EmbeddingError, HashEmbedder, OllamaEmbedder
+from ragsearch.embedder import (
+    EmbeddingError,
+    HashEmbedder,
+    OllamaEmbedder,
+    make_embedder,
+)
 
 
 def test_hash_embedder_shape_and_unit_length():
@@ -105,3 +110,23 @@ def test_ollama_embedder_raises_clear_error_when_server_down():
     emb = OllamaEmbedder(host="http://127.0.0.1:1", timeout=1)
     with pytest.raises(EmbeddingError, match="Ollama"):
         emb.embed(["a"])
+
+
+# --- names and factory -----------------------------------------------------
+
+
+def test_embedder_names_identify_model_and_size():
+    assert HashEmbedder(dim=64).name == "hash-64"
+    assert OllamaEmbedder(model="nomic-embed-text").name == "ollama-nomic-embed-text"
+
+
+def test_make_embedder_builds_each_kind():
+    assert isinstance(make_embedder("hash"), HashEmbedder)
+    emb = make_embedder("ollama", host="http://example:1", model="m")
+    assert isinstance(emb, OllamaEmbedder)
+    assert (emb.host, emb.model) == ("http://example:1", "m")
+
+
+def test_make_embedder_rejects_unknown_kind():
+    with pytest.raises(ValueError, match="unknown"):
+        make_embedder("word2vec")
