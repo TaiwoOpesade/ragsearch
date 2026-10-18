@@ -74,7 +74,7 @@ class CreditBudget:
             )
 
     def record(self, credits: int) -> None:
-        self.ensure_available(credits)
+        """Add credits actually spent. Never refuses: real spending must be counted."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {"month": self._month(), "credits": self.used + credits}
         self.path.write_text(json.dumps(data), encoding="utf-8")

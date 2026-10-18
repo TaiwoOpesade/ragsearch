@@ -60,11 +60,14 @@ def test_refuses_calls_beyond_the_cap_with_a_clear_error(tmp_path):
         b.ensure_available(2)
 
 
-def test_record_also_refuses_going_over_the_cap(tmp_path):
+def test_spending_over_the_cap_is_still_recorded_and_blocks_further_calls(tmp_path):
+    # Credits already charged by Tavily must never be under-counted.
     b = budget(tmp_path, cap=5)
+    b.record(6)
+    assert b.used == 6
+    assert b.remaining == 0
     with pytest.raises(BudgetExceeded):
-        b.record(6)
-    assert b.used == 0
+        b.ensure_available(1)
 
 
 def test_new_month_starts_from_zero(tmp_path):
