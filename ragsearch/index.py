@@ -5,6 +5,7 @@
 the way in, so cosine similarity is just a dot product.
 """
 
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,14 +61,31 @@ def check_query(dim: int, query: np.ndarray, k: int) -> np.ndarray:
     return normalise_rows(query[None, :])
 
 
+def encode_json(value: object) -> np.ndarray:
+    """JSON as a UTF-8 byte array: about 4x smaller than a NumPy unicode string."""
+    data = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    return np.frombuffer(data, dtype=np.uint8)
+
+
+def decode_json(array: np.ndarray) -> object:
+    if array.dtype.kind == "U":  # files written before the UTF-8 format
+        return json.loads(array.item())
+    return json.loads(array.tobytes().decode("utf-8"))
+
+
+def npz_bytes(**arrays: np.ndarray) -> bytes:
+    buffer = io.BytesIO()
+    np.savez_compressed(buffer, **arrays)
+    return buffer.getvalue()
+
+
 def save_npz(path: str | Path, vectors: np.ndarray, items: list[dict]) -> None:
-    with open(path, "wb") as f:  # a file object stops NumPy appending ".npz"
-        np.savez_compressed(f, vectors=vectors, items=np.array(json.dumps(items)))
+    Path(path).write_bytes(npz_bytes(vectors=vectors, items=encode_json(items)))
 
 
 def load_npz(path: str | Path) -> tuple[np.ndarray, list[dict]]:
     with np.load(path, allow_pickle=False) as data:
-        return data["vectors"], json.loads(data["items"].item())
+        return data["vectors"], decode_json(data["items"])
 
 
 def index_backend(name: str) -> type[Index]:
