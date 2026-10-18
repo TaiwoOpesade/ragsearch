@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local data and secrets (never commit)
+data/
+*.npz
+.env
+
+# Original Stage 1 archive and an unrelated empty scratch file (not part of the project)
+rag_search_stage1.zip
+app.py
