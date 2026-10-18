@@ -1,0 +1,76 @@
+"""Command-line interface: ``python -m ragsearch ingest|search``."""
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+from ragsearch.config import Settings, load_settings
+from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
+from ragsearch.loaders import load_documents
+from ragsearch.pipeline import ingest, search
+from ragsearch.store import Store, StoreError
+
+SNIPPET_CHARS = 160
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--embedder", choices=["hash", "ollama"], default="ollama",
+        help="ollama = real semantic embeddings; hash = offline, for testing",
+    )
+    common.add_argument("--data-dir", type=Path, help="where the index is stored")
+
+    parser = argparse.ArgumentParser(prog="ragsearch", description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    p_ingest = commands.add_parser("ingest", parents=[common], help="add files to the index")
+    p_ingest.add_argument("path", help="a .md, .txt or .pdf file, or a directory")
+
+    p_search = commands.add_parser("search", parents=[common], help="search the index")
+    p_search.add_argument("query")
+    p_search.add_argument("-k", type=int, default=5, help="number of results")
+    return parser
+
+
+def _snippet(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= SNIPPET_CHARS else text[: SNIPPET_CHARS - 3] + "..."
+
+
+def _cmd_ingest(args: argparse.Namespace, embedder: Embedder, store: Store) -> None:
+    report = ingest(load_documents(args.path), embedder, store)
+    total = len(report.updated) + len(report.skipped) + len(report.failed)
+    print(
+        f"Ingested {report.added} new chunks from {total} sources "
+        f"({len(report.skipped)} unchanged, {len(report.failed)} failed). "
+        f"Index holds {len(store)} chunks."
+    )
+
+
+def _cmd_search(args: argparse.Namespace, embedder: Embedder, store: Store) -> None:
+    results = search(args.query, embedder, store, k=args.k)
+    if not results:
+        print("No results. Ingest some documents first.")
+        return
+    for rank, result in enumerate(results, start=1):
+        print(f"{rank}. {result.score:.3f}  {result.item['source']}")
+        print(f"   {_snippet(result.item['text'])}")
+
+
+def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    settings = settings or load_settings()
+    logging.basicConfig(level=logging.WARNING, format="warning: %(message)s")
+
+    embedder = make_embedder(args.embedder, host=settings.ollama_host,
+                             model=settings.embed_model)
+    try:
+        store = Store(args.data_dir or settings.data_dir, embedder_name=embedder.name)
+        commands = {"ingest": _cmd_ingest, "search": _cmd_search}
+        commands[args.command](args, embedder, store)
+    except (EmbeddingError, StoreError) as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    return 0

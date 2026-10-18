@@ -8,3 +8,6 @@ dependencies = ["numpy", "pypdf"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "live: talks to a real service (Ollama or the internet); skipped unless RAGSEARCH_LIVE=1",
+]
