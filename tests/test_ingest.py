@@ -107,3 +107,98 @@ def test_ingest_saves_so_a_new_store_sees_the_chunks(tmp_path):
     emb = HashEmbedder(dim=64)
     ingest([Document.from_text("a.md", "saved text")], emb, make_store(tmp_path, emb))
     assert len(make_store(tmp_path, emb)) == 1
+
+
+# --- cross-segment chunks, broken text, pruning deleted files -------------------
+
+
+def test_chunks_flow_across_segment_boundaries(tmp_path):
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    doc = Document("two.txt", lambda: iter(["a b c", "d e"]))
+    ingest([doc], emb, store, chunk_size=4, overlap=1)
+    texts = sorted(r.item["text"] for r in search("a", emb, store, k=10))
+    assert texts == ["a b c d", "d e"]
+
+
+def test_document_with_broken_unicode_fails_alone(tmp_path):
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    report = ingest([Document.from_text("bad", "half a pair \ud835"),
+                     Document.from_text("good", "fine text")], emb, store)
+    assert report.failed == ["bad"]
+    assert report.updated == ["good"]
+
+
+def test_search_embeds_the_query_with_embed_query(tmp_path):
+    class QueryRecorder(HashEmbedder):
+        def __init__(self, dim):
+            super().__init__(dim)
+            self.queries: list[str] = []
+
+        def embed_query(self, text):
+            self.queries.append(text)
+            return super().embed_query(text)
+
+    emb = QueryRecorder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest([Document.from_text("a.md", "stacks")], emb, store)
+    search("what is a stack", emb, store)
+    assert emb.queries == ["what is a stack"]
+
+
+def write(folder, name, text):
+    path = folder / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_deleted_file_is_pruned_when_its_folder_is_re_ingested(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    write(notes, "draft.md", "exam is Monday in room 12")
+    write(notes, "keep.md", "stacks are LIFO")
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    (notes / "draft.md").unlink()
+    report = ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    assert [s.rsplit("/", 1)[-1] for s in report.removed] == ["draft.md"]
+    assert [s.rsplit("/", 1)[-1] for s in store.sources] == ["keep.md"]
+    assert all("room 12" not in r.item["text"] for r in search("exam", emb, store, k=10))
+
+
+def test_renamed_file_does_not_leave_a_stale_copy(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    write(notes, "draft.md", "exam is Monday in room 12")
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    (notes / "draft.md").rename(notes / "final.md")
+    ingest(load_documents(notes), emb, store, prune_under=notes)
+    assert [s.rsplit("/", 1)[-1] for s in store.sources] == ["final.md"]
+    assert len(store) == 1
+
+
+def test_pruning_never_touches_other_folders_web_pages_or_failed_files(tmp_path):
+    notes, other = tmp_path / "notes", tmp_path / "notes-archive"
+    notes.mkdir()
+    other.mkdir()
+    write(other, "old.md", "archived")
+    bad = notes / "bad.pdf"
+    bad.write_bytes(b"not a pdf")
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest(load_documents(other), emb, store)
+    ingest([Document.from_text("https://web.example/page", "a web page")], emb, store)
+    store.replace(bad.resolve().as_posix(), "old", emb.embed(["old pdf text"]),
+                  [{"text": "old pdf text", "source": bad.resolve().as_posix(), "index": 0}])
+
+    report = ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    assert report.removed == []
+    assert len(store.sources) == 3  # the archive file, the web page and the failed PDF
