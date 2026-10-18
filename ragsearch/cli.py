@@ -5,11 +5,11 @@ import logging
 import sys
 from pathlib import Path
 
-from ragsearch.config import Settings, load_settings
+from ragsearch.config import ConfigError, Settings, load_settings
 from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
 from ragsearch.eval import EvalError, evaluate, load_cases
 from ragsearch.index import index_backend
-from ragsearch.loaders import load_documents
+from ragsearch.loaders import LoaderError, load_documents
 from ragsearch.pipeline import ingest
 from ragsearch.retrieval import hybrid_search
 from ragsearch.store import Store, StoreError
@@ -19,7 +19,22 @@ from ragsearch.web.sources import make_tavily, web_documents
 from ragsearch.web.tavily import TavilyError
 
 SNIPPET_CHARS = 160
-ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded, EvalError)
+# Expected failures: print one "error: ..." line instead of a traceback.
+ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded, EvalError,
+          LoaderError, OSError)
+
+
+def _int_at_least(minimum: int):
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"must be {minimum} or more, got {value}")
+        return value
+
+    return parse
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -37,8 +52,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ingest = commands.add_parser("ingest", parents=[common], help="add files or web pages")
     p_ingest.add_argument("path", help="a .md/.txt/.pdf file, a directory, or an http(s) URL")
     p_ingest.add_argument("--crawl", action="store_true", help="crawl the site, not one page")
-    p_ingest.add_argument("--max-pages", type=int, default=30)
-    p_ingest.add_argument("--max-depth", type=int, default=2)
+    p_ingest.add_argument("--max-pages", type=_int_at_least(1), default=30)
+    p_ingest.add_argument("--max-depth", type=_int_at_least(0), default=2)
     p_ingest.add_argument(
         "--provider", choices=["local", "tavily"], default="local",
         help="local = free polite crawler; tavily = Tavily API (spends credits)",
@@ -46,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_search = commands.add_parser("search", parents=[common], help="search the index")
     p_search.add_argument("query")
-    p_search.add_argument("-k", type=int, default=5, help="number of results")
+    p_search.add_argument("-k", type=_int_at_least(1), default=5, help="number of results")
     p_search.add_argument("--web", action="store_true",
                           help="if local results are weak, also search Tavily (spends credits)")
     p_search.add_argument("--save-web", action="store_true",
@@ -54,7 +69,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_eval = commands.add_parser("eval", parents=[common], help="measure retrieval quality")
     p_eval.add_argument("labelled", type=Path, help="JSON list of question/expected_source")
-    p_eval.add_argument("-k", type=int, default=5)
+    p_eval.add_argument("-k", type=_int_at_least(1), default=5)
     return parser
 
 
@@ -64,18 +79,24 @@ def _snippet(text: str) -> str:
 
 
 def _cmd_ingest(args, settings: Settings, embedder: Embedder, store: Store) -> None:
+    prune_under = None
     if args.path.startswith(("http://", "https://")):
         documents = web_documents(
             args.path, settings, store.data_dir, crawl=args.crawl,
             max_pages=args.max_pages, max_depth=args.max_depth, provider=args.provider,
         )
     else:
-        documents = load_documents(args.path)
-    report = ingest(documents, embedder, store)
+        path = Path(args.path)
+        if not path.exists():
+            raise LoaderError(f"{path} does not exist")
+        documents = load_documents(path)
+        prune_under = path if path.is_dir() else None
+    report = ingest(documents, embedder, store, prune_under=prune_under)
     total = len(report.updated) + len(report.skipped) + len(report.failed)
+    removed = f", {len(report.removed)} removed" if report.removed else ""
     print(
         f"Ingested {report.added} new chunks from {total} sources "
-        f"({len(report.skipped)} unchanged, {len(report.failed)} failed). "
+        f"({len(report.skipped)} unchanged, {len(report.failed)} failed{removed}). "
         f"Index holds {len(store)} chunks."
     )
 
@@ -101,8 +122,12 @@ def _cmd_eval(args, settings: Settings, embedder: Embedder, store: Store) -> Non
 
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    settings = settings or load_settings()
     logging.basicConfig(level=logging.WARNING, format="warning: %(message)s")
+    try:
+        settings = settings or load_settings()
+    except ConfigError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
 
     embedder = make_embedder(args.embedder or settings.embedder, host=settings.ollama_host,
                              model=settings.embed_model)

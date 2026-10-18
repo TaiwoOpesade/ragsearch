@@ -103,3 +103,56 @@ def test_embedder_setting_is_used_when_flag_is_omitted(tmp_path, capsys):
     code, out, _ = run(["ingest", str(FIXTURES)], settings, capsys)
     assert code == 0
     assert "4 sources" in out
+
+
+# --- clean errors instead of tracebacks -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["search", "q", "-k", "0"], ["search", "q", "-k", "-1"], ["eval", "x.json", "-k", "0"],
+     ["ingest", "https://a.example", "--crawl", "--max-pages", "0"],
+     ["ingest", "https://a.example", "--crawl", "--max-depth", "-1"]],
+)
+def test_out_of_range_numbers_are_usage_errors(argv, settings, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*argv, "--embedder", "hash"], settings=settings)
+    assert exc.value.code == 2
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_missing_ingest_path_is_an_error(settings, capsys, tmp_path):
+    code, _, err = run(["ingest", str(tmp_path / "no-such-folder"), "--embedder", "hash"],
+                       settings, capsys)
+    assert code == 1
+    assert "does not exist" in err
+
+
+def test_data_dir_that_is_a_file_is_a_clean_error(tmp_path, capsys):
+    not_a_dir = tmp_path / "file.txt"
+    not_a_dir.write_text("x", encoding="utf-8")
+    code, _, err = run(["ingest", str(FIXTURES), "--embedder", "hash", "--data-dir",
+                        str(not_a_dir)], Settings(), capsys)
+    assert code == 1
+    assert err.startswith("error:")
+
+
+def test_bad_setting_is_a_clean_error_naming_the_variable(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)  # no .env here
+    monkeypatch.setenv("TAVILY_MONTHLY_CAP", "lots")
+    code = main(["search", "q", "--embedder", "hash"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "TAVILY_MONTHLY_CAP" in err
+    assert "Traceback" not in err
+
+
+def test_deleted_files_are_reported_as_removed(tmp_path, settings, capsys):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "a.md").write_text("alpha notes", encoding="utf-8")
+    (notes / "b.md").write_text("beta notes", encoding="utf-8")
+    run(["ingest", str(notes), "--embedder", "hash"], settings, capsys)
+    (notes / "a.md").unlink()
+    _, out, _ = run(["ingest", str(notes), "--embedder", "hash"], settings, capsys)
+    assert "1 removed" in out

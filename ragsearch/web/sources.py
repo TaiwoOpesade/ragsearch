@@ -25,12 +25,17 @@ def web_documents(
     max_pages: int = 30,
     max_depth: int = 2,
     provider: Literal["local", "tavily"] = "local",
+    fetcher: Fetcher | None = None,
 ) -> Iterable[Document]:
-    """One page, or a same-site crawl, as documents keyed by page URL."""
+    """One page, or a same-site crawl, as documents keyed by page URL.
+
+    Pass a long-lived ``fetcher`` (as the API does) so the politeness delay and
+    the robots.txt cache hold across calls, not just within one.
+    """
     if provider == "tavily":
         client = make_tavily(settings, data_dir)
         pages = client.crawl(url, max_pages, max_depth) if crawl else client.extract([url])
     else:
-        fetcher = Fetcher()
+        fetcher = fetcher or Fetcher()
         pages = fetcher.crawl(url, max_pages, max_depth) if crawl else [fetcher.fetch(url)]
     return (Document.from_text(page.url, page.text) for page in pages)

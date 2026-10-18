@@ -52,10 +52,13 @@ def test_ingest_single_url_with_local_fetcher(site, settings, capsys):
 
 
 def test_crawl_with_local_provider_honours_max_pages(site, settings, capsys):
+    site.routes["/next"] = (200, HTML, page("Merge sort splits and merges lists.", ["/third"]))
+    site.routes["/third"] = (200, HTML, page("Quick sort picks a pivot."))
     code, out, _ = run(["ingest", site.url + "/", "--crawl", "--max-pages", "2",
                         "--provider", "local", "--embedder", "hash"], settings, capsys)
     assert code == 0
     assert "2 sources" in out
+    assert "/third" not in site.paths  # a crawler ignoring --max-pages would fetch it
 
 
 def test_ingest_url_with_tavily_uses_extract(fake_tavily, settings, capsys):
@@ -108,3 +111,37 @@ def test_search_with_web_labels_each_result(fake_tavily, settings, capsys):
 def test_search_without_web_flag_never_calls_tavily(fake_tavily, settings, capsys):
     run(["search", "anything", "--embedder", "hash"], settings, capsys)
     assert fake_tavily.requests == []
+
+
+def search_results(request):
+    return 200, {}, {"results": [
+        {"title": "Dijkstra", "url": "https://web.example/dijkstra",
+         "content": "Dijkstra finds shortest paths in weighted graphs.", "score": 0.8}]}
+
+
+def test_save_web_flag_persists_web_results(fake_tavily, settings, capsys):
+    fake_tavily.routes["/search"] = search_results
+    run(["search", "shortest paths weighted graphs", "--web", "--save-web",
+         "--embedder", "hash"], settings, capsys)
+    _, out, _ = run(["search", "shortest paths weighted graphs", "--embedder", "hash"],
+                    settings, capsys)
+    assert "[local]  https://web.example/dijkstra" in out
+
+
+def test_without_save_web_nothing_is_persisted(fake_tavily, settings, capsys):
+    fake_tavily.routes["/search"] = search_results
+    run(["search", "shortest paths weighted graphs", "--web", "--embedder", "hash"],
+        settings, capsys)
+    _, out, _ = run(["search", "shortest paths weighted graphs", "--embedder", "hash"],
+                    settings, capsys)
+    assert "No results" in out
+
+
+def test_threshold_setting_controls_the_web_fallback(fake_tavily, tmp_path, capsys):
+    fake_tavily.routes["/search"] = search_results
+    settings = Settings(data_dir=tmp_path / "data", tavily_api_key="tvly-test",
+                        web_fallback_threshold=0.0)
+    (tmp_path / "n.md").write_text("weighted graphs shortest paths", encoding="utf-8")
+    run(["ingest", str(tmp_path / "n.md"), "--embedder", "hash"], settings, capsys)
+    run(["search", "weighted graphs", "--web", "--embedder", "hash"], settings, capsys)
+    assert fake_tavily.requests == []  # a local score above 0.0 is good enough
