@@ -76,6 +76,7 @@ class OllamaEmbedder:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.load(response)
         except urllib.error.HTTPError as err:
+            err.close()  # HTTPError holds an open response; avoid a ResourceWarning
             raise EmbeddingError(f"Ollama returned HTTP {err.code}") from err
         except OSError as err:
             raise EmbeddingError(
