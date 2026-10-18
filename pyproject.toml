@@ -3,7 +3,10 @@ name = "ragsearch"
 version = "0.1.0"
 description = "Semantic search and RAG system built from scratch"
 requires-python = ">=3.10"
-dependencies = ["numpy", "pypdf", "faiss-cpu", "httpx", "requests", "trafilatura"]
+dependencies = [
+    "numpy", "pypdf", "faiss-cpu", "httpx", "requests", "trafilatura",
+    "fastapi", "uvicorn", "pydantic",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
