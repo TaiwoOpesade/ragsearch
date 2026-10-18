@@ -7,11 +7,12 @@ crawl = map + extract. The default cap of 800 leaves a safety margin.
 
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
-from ragsearch.fileutil import atomic_write_bytes, file_lock
+from ragsearch.fileutil import LockTimeout, atomic_write_bytes, file_lock
 
 DEFAULT_CAP = 800
 
@@ -48,14 +49,21 @@ class CreditBudget:
         path: str | Path,
         cap: int = DEFAULT_CAP,
         today: Callable[[], date] = date.today,
+        lock_timeout: float = 30.0,
     ):
         self.path = Path(path)
         self.cap = cap
         self._today = today
+        self._lock_timeout = lock_timeout
 
-    @property
-    def _lock(self) -> Path:
-        return self.path.with_name(self.path.name + ".lock")
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        try:
+            with file_lock(self.path.with_name(self.path.name + ".lock"),
+                           timeout=self._lock_timeout):
+                yield
+        except LockTimeout as err:  # cannot check the budget, so do not spend
+            raise BudgetExceeded(f"Tavily budget is locked by another process: {err}") from err
 
     def _month(self) -> str:
         return self._today().strftime("%Y-%m")
@@ -93,7 +101,7 @@ class CreditBudget:
 
     def reserve(self, credits: int) -> int:
         """Book ``credits`` now, or raise ``BudgetExceeded`` and book nothing."""
-        with file_lock(self._lock):
+        with self._locked():
             used = self.used
             self._check(used, credits)
             self._write(used + credits)
@@ -102,7 +110,7 @@ class CreditBudget:
     def adjust(self, delta: int) -> None:
         """Add ``delta`` (negative to give back part of a reservation); never below 0."""
         if delta:
-            with file_lock(self._lock):
+            with self._locked():
                 self._write(self.used + delta)
 
     def record(self, credits: int) -> None:

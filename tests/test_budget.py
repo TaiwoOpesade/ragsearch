@@ -146,3 +146,12 @@ def test_usage_file_is_written_atomically_with_no_leftovers(tmp_path):
     b.record(1)
     b.reserve(2)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["tavily_usage.json"]
+
+
+def test_a_budget_locked_by_another_process_refuses_cleanly(tmp_path):
+    from ragsearch.fileutil import file_lock
+
+    b = CreditBudget(tmp_path / "tavily_usage.json", cap=10, lock_timeout=0.2)
+    with file_lock(tmp_path / "tavily_usage.json.lock"), \
+            pytest.raises(BudgetExceeded, match="locked"):
+        b.reserve(1)
