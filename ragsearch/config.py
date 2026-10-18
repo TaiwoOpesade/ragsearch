@@ -13,6 +13,8 @@ class Settings:
     gen_model: str = "llama3.2:3b"
     data_dir: Path = Path("data")
     index_backend: str = "numpy"
+    tavily_monthly_cap: int = 800
+    web_fallback_threshold: float = 0.5
     # repr=False keeps the key out of logs, tracebacks and print(settings).
     tavily_api_key: str | None = field(default=None, repr=False)
 
@@ -37,5 +39,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         gen_model=env.get("GEN_MODEL", default.gen_model),
         data_dir=Path(env.get("DATA_DIR", str(default.data_dir))),
         index_backend=backend,
+        tavily_monthly_cap=int(env.get("TAVILY_MONTHLY_CAP", default.tavily_monthly_cap)),
+        web_fallback_threshold=float(
+            env.get("WEB_FALLBACK_THRESHOLD", default.web_fallback_threshold)
+        ),
         tavily_api_key=env.get("TAVILY_API_KEY") or None,
     )

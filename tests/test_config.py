@@ -55,3 +55,12 @@ def test_index_backend_defaults_to_numpy_and_can_be_faiss():
 def test_unknown_index_backend_is_rejected():
     with pytest.raises(ValueError, match="INDEX_BACKEND"):
         load_settings({"INDEX_BACKEND": "annoy"})
+
+
+def test_web_settings_have_safe_defaults_and_can_be_overridden():
+    defaults = load_settings({})
+    assert defaults.tavily_monthly_cap == 800
+    assert defaults.web_fallback_threshold == 0.5
+    custom = load_settings({"TAVILY_MONTHLY_CAP": "100", "WEB_FALLBACK_THRESHOLD": "0.3"})
+    assert custom.tavily_monthly_cap == 100
+    assert custom.web_fallback_threshold == 0.3
