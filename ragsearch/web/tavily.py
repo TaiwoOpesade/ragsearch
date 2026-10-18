@@ -12,6 +12,7 @@ Every call is checked against the local ``CreditBudget`` *before* it is sent.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,6 +25,10 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.tavily.com"
 MAX_EXTRACT_URLS = 20
+# Only failures where a retry cannot double-charge: the request never arrived, or
+# Tavily said it is temporarily unavailable (it does not charge failed calls).
+RETRY_STATUSES = {502, 503, 504}
+RETRY_DELAYS = (0.5, 1.0)  # seconds to wait before the 2nd and 3rd attempts
 
 
 class TavilyError(RuntimeError):
@@ -45,16 +50,18 @@ class TavilyClient:
         budget: CreditBudget,
         base_url: str | None = None,
         timeout: float = 30.0,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         if not api_key:
             raise TavilyError(
-                "TAVILY_API_KEY is not set. Get a free key at tavily.com, set it as an "
-                "environment variable, or use --provider local."
+                "TAVILY_API_KEY is not set. Get a free key at tavily.com and add "
+                "TAVILY_API_KEY=... to .env (or your environment), or use --provider local."
             )
         self._api_key = api_key
         self._budget = budget
         self._base_url = (base_url or BASE_URL).rstrip("/")
         self._timeout = timeout
+        self._sleep = sleep
 
     def search(
         self, query: str, max_results: int = 5, search_depth: str = "basic"
@@ -102,15 +109,7 @@ class TavilyClient:
     ) -> dict:
         """POST ``body`` if ``worst_case`` credits fit the budget, then record the real cost."""
         self._budget.ensure_available(worst_case)
-        try:
-            response = httpx.post(
-                self._base_url + path,
-                json=body,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as err:
-            raise TavilyError(f"Could not reach Tavily at {self._base_url}: {err}") from err
+        response = self._send(path, body)
         if response.status_code != 200:
             raise TavilyError(_describe_error(response))
 
@@ -120,6 +119,32 @@ class TavilyClient:
             charged = actual(payload) if actual else worst_case
         self._budget.record(int(charged))
         return payload
+
+
+    def _send(self, path: str, body: dict) -> httpx.Response:
+        """POST once, retrying only failures that cannot have been charged."""
+        for attempt, delay in enumerate((*RETRY_DELAYS, None)):
+            try:
+                response = httpx.post(
+                    self._base_url + path,
+                    json=body,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    timeout=self._timeout,
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout) as err:
+                if delay is None:
+                    raise TavilyError(
+                        f"Could not reach Tavily at {self._base_url}: {err}"
+                    ) from err
+            except httpx.HTTPError as err:  # sent but no answer: retrying could double-charge
+                raise TavilyError(f"Could not reach Tavily at {self._base_url}: {err}") from err
+            else:
+                if response.status_code not in RETRY_STATUSES or delay is None:
+                    return response
+            log.warning("Tavily request failed (attempt %d), retrying in %.1fs", attempt + 1,
+                        delay)
+            self._sleep(delay)
+        raise AssertionError("unreachable")  # the loop always returns or raises
 
 
 def _describe_error(response: httpx.Response) -> str:

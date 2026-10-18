@@ -141,6 +141,76 @@ def test_http_errors_become_clear_tavily_errors(stub_server, client, budget,
 
 
 def test_unreachable_server_is_a_tavily_error(budget):
-    client = TavilyClient(api_key=KEY, budget=budget, base_url="http://127.0.0.1:1", timeout=1)
+    client = TavilyClient(api_key=KEY, budget=budget, base_url="http://127.0.0.1:1", timeout=1,
+                          sleep=lambda seconds: None)  # retry timing is tested separately
     with pytest.raises(TavilyError, match="reach"):
         client.search("stack")
+
+
+# --- retries for transient failures ------------------------------------------
+
+
+class RecordingSleep:
+    def __init__(self):
+        self.calls: list[float] = []
+
+    def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+def flaky(statuses):
+    """Route that answers with each status in turn, then succeeds."""
+    remaining = list(statuses)
+
+    def route(request):
+        if remaining:
+            return remaining.pop(0), {}, {"detail": {"error": "temporarily unavailable"}}
+        return search_response(request)
+
+    return route
+
+
+def test_temporarily_unavailable_is_retried_then_succeeds(stub_server, budget):
+    stub_server.routes["/search"] = flaky([503, 502])
+    sleep = RecordingSleep()
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, sleep=sleep)
+    results = client.search("stack")
+    assert len(results) == 2
+    assert len(stub_server.requests) == 3
+    assert sleep.calls == [0.5, 1.0]
+    assert budget.used == 1  # charged once, for the call that succeeded
+
+
+def test_gives_up_after_the_retries_are_used(stub_server, budget):
+    stub_server.routes["/search"] = flaky([503, 503, 503, 503])
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url,
+                          sleep=RecordingSleep())
+    with pytest.raises(TavilyError, match="503"):
+        client.search("stack")
+    assert len(stub_server.requests) == 3
+    assert budget.used == 0
+
+
+@pytest.mark.parametrize("status", [400, 401, 429, 432, 500])
+def test_errors_that_a_retry_cannot_fix_are_not_retried(stub_server, budget, status):
+    stub_server.routes["/search"] = (status, {}, {"detail": {"error": "no"}})
+    sleep = RecordingSleep()
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, sleep=sleep)
+    with pytest.raises(TavilyError):
+        client.search("stack")
+    assert len(stub_server.requests) == 1
+    assert sleep.calls == []
+
+
+def test_connection_failures_are_retried(budget):
+    sleep = RecordingSleep()
+    client = TavilyClient(api_key=KEY, budget=budget, base_url="http://127.0.0.1:1",
+                          timeout=1, sleep=sleep)
+    with pytest.raises(TavilyError, match="reach"):
+        client.search("stack")
+    assert sleep.calls == [0.5, 1.0]
+
+
+def test_missing_key_message_mentions_the_env_file(budget):
+    with pytest.raises(TavilyError, match=r"\.env"):
+        TavilyClient(api_key=None, budget=budget)
