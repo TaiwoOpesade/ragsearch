@@ -43,7 +43,7 @@ class TavilyClient:
         self,
         api_key: str | None,
         budget: CreditBudget,
-        base_url: str = BASE_URL,
+        base_url: str | None = None,
         timeout: float = 30.0,
     ):
         if not api_key:
@@ -53,7 +53,7 @@ class TavilyClient:
             )
         self._api_key = api_key
         self._budget = budget
-        self._base_url = base_url.rstrip("/")
+        self._base_url = (base_url or BASE_URL).rstrip("/")
         self._timeout = timeout
 
     def search(

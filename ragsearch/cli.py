@@ -3,16 +3,22 @@
 import argparse
 import logging
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from ragsearch.config import Settings, load_settings
 from ragsearch.embedder import Embedder, EmbeddingError, make_embedder
 from ragsearch.index import index_backend
-from ragsearch.loaders import load_documents
-from ragsearch.pipeline import ingest, search
+from ragsearch.loaders import Document, load_documents
+from ragsearch.pipeline import ingest
+from ragsearch.retrieval import hybrid_search
 from ragsearch.store import Store, StoreError
+from ragsearch.web.budget import BudgetExceeded, CreditBudget
+from ragsearch.web.fetcher import Fetcher, FetchError
+from ragsearch.web.tavily import TavilyClient, TavilyError
 
 SNIPPET_CHARS = 160
+ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -26,13 +32,42 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ragsearch", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    p_ingest = commands.add_parser("ingest", parents=[common], help="add files to the index")
-    p_ingest.add_argument("path", help="a .md, .txt or .pdf file, or a directory")
+    p_ingest = commands.add_parser("ingest", parents=[common], help="add files or web pages")
+    p_ingest.add_argument("path", help="a .md/.txt/.pdf file, a directory, or an http(s) URL")
+    p_ingest.add_argument("--crawl", action="store_true", help="crawl the site, not one page")
+    p_ingest.add_argument("--max-pages", type=int, default=30)
+    p_ingest.add_argument("--max-depth", type=int, default=2)
+    p_ingest.add_argument(
+        "--provider", choices=["local", "tavily"], default="local",
+        help="local = free polite crawler; tavily = Tavily API (spends credits)",
+    )
 
     p_search = commands.add_parser("search", parents=[common], help="search the index")
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5, help="number of results")
+    p_search.add_argument("--web", action="store_true",
+                          help="if local results are weak, also search Tavily (spends credits)")
+    p_search.add_argument("--save-web", action="store_true",
+                          help="add web results to the local index")
     return parser
+
+
+def make_tavily(settings: Settings, data_dir: Path) -> TavilyClient:
+    budget = CreditBudget(data_dir / "tavily_usage.json", cap=settings.tavily_monthly_cap)
+    return TavilyClient(api_key=settings.tavily_api_key, budget=budget)
+
+
+def _web_documents(args: argparse.Namespace, settings: Settings, data_dir: Path
+                   ) -> Iterable[Document]:
+    if args.provider == "tavily":
+        client = make_tavily(settings, data_dir)
+        pages = (client.crawl(args.path, args.max_pages, args.max_depth) if args.crawl
+                 else client.extract([args.path]))
+    else:
+        fetcher = Fetcher()
+        pages = (fetcher.crawl(args.path, args.max_pages, args.max_depth) if args.crawl
+                 else [fetcher.fetch(args.path)])
+    return (Document.from_text(page.url, page.text) for page in pages)
 
 
 def _snippet(text: str) -> str:
@@ -40,8 +75,12 @@ def _snippet(text: str) -> str:
     return text if len(text) <= SNIPPET_CHARS else text[: SNIPPET_CHARS - 3] + "..."
 
 
-def _cmd_ingest(args: argparse.Namespace, embedder: Embedder, store: Store) -> None:
-    report = ingest(load_documents(args.path), embedder, store)
+def _cmd_ingest(args, settings: Settings, embedder: Embedder, store: Store) -> None:
+    if args.path.startswith(("http://", "https://")):
+        documents = _web_documents(args, settings, store.data_dir)
+    else:
+        documents = load_documents(args.path)
+    report = ingest(documents, embedder, store)
     total = len(report.updated) + len(report.skipped) + len(report.failed)
     print(
         f"Ingested {report.added} new chunks from {total} sources "
@@ -50,14 +89,16 @@ def _cmd_ingest(args: argparse.Namespace, embedder: Embedder, store: Store) -> N
     )
 
 
-def _cmd_search(args: argparse.Namespace, embedder: Embedder, store: Store) -> None:
-    results = search(args.query, embedder, store, k=args.k)
-    if not results:
+def _cmd_search(args, settings: Settings, embedder: Embedder, store: Store) -> None:
+    web = make_tavily(settings, store.data_dir) if args.web else None
+    hits = hybrid_search(args.query, embedder, store, k=args.k, web=web,
+                         threshold=settings.web_fallback_threshold, persist=args.save_web)
+    if not hits:
         print("No results. Ingest some documents first.")
         return
-    for rank, result in enumerate(results, start=1):
-        print(f"{rank}. {result.score:.3f}  {result.item['source']}")
-        print(f"   {_snippet(result.item['text'])}")
+    for rank, hit in enumerate(hits, start=1):
+        print(f"{rank}. {hit.score:.3f}  [{hit.origin}]  {hit.source}")
+        print(f"   {_snippet(hit.text)}")
 
 
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
@@ -74,8 +115,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
             index_factory=index_backend(settings.index_backend),
         )
         commands = {"ingest": _cmd_ingest, "search": _cmd_search}
-        commands[args.command](args, embedder, store)
-    except (EmbeddingError, StoreError) as err:
+        commands[args.command](args, settings, embedder, store)
+    except ERRORS as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
     return 0
