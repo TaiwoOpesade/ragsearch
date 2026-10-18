@@ -96,3 +96,10 @@ def test_cli_works_with_the_faiss_backend(tmp_path, capsys):
     _, out, _ = run(["search", "chlorophyll glucose", "-k", "1", "--embedder", "hash"],
                     settings, capsys)
     assert out.splitlines()[0].endswith("photosynthesis.md")
+
+
+def test_embedder_setting_is_used_when_flag_is_omitted(tmp_path, capsys):
+    settings = Settings(data_dir=tmp_path / "data", embedder="hash")
+    code, out, _ = run(["ingest", str(FIXTURES)], settings, capsys)
+    assert code == 0
+    assert "4 sources" in out

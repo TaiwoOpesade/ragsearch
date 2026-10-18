@@ -24,8 +24,9 @@ ERRORS = (EmbeddingError, StoreError, FetchError, TavilyError, BudgetExceeded)
 def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--embedder", choices=["hash", "ollama"], default="ollama",
-        help="ollama = real semantic embeddings; hash = offline, for testing",
+        "--embedder", choices=["hash", "ollama"],
+        help="ollama = real semantic embeddings; hash = offline, for testing "
+        "(default: EMBEDDER setting, else ollama)",
     )
     common.add_argument("--data-dir", type=Path, help="where the index is stored")
 
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     settings = settings or load_settings()
     logging.basicConfig(level=logging.WARNING, format="warning: %(message)s")
 
-    embedder = make_embedder(args.embedder, host=settings.ollama_host,
+    embedder = make_embedder(args.embedder or settings.embedder, host=settings.ollama_host,
                              model=settings.embed_model)
     try:
         store = Store(

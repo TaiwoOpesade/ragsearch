@@ -64,3 +64,10 @@ def test_web_settings_have_safe_defaults_and_can_be_overridden():
     custom = load_settings({"TAVILY_MONTHLY_CAP": "100", "WEB_FALLBACK_THRESHOLD": "0.3"})
     assert custom.tavily_monthly_cap == 100
     assert custom.web_fallback_threshold == 0.3
+
+
+def test_embedder_defaults_to_ollama_and_can_be_hash():
+    assert load_settings({}).embedder == "ollama"
+    assert load_settings({"EMBEDDER": "hash"}).embedder == "hash"
+    with pytest.raises(ValueError, match="EMBEDDER"):
+        load_settings({"EMBEDDER": "word2vec"})

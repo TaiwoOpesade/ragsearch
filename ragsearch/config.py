@@ -12,6 +12,7 @@ class Settings:
     embed_model: str = "nomic-embed-text"
     gen_model: str = "llama3.2:3b"
     data_dir: Path = Path("data")
+    embedder: str = "ollama"
     index_backend: str = "numpy"
     tavily_monthly_cap: int = 800
     web_fallback_threshold: float = 0.5
@@ -24,6 +25,7 @@ def _with_scheme(host: str) -> str:
 
 
 INDEX_BACKENDS = ("numpy", "faiss")
+EMBEDDERS = ("ollama", "hash")
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -33,11 +35,15 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     backend = env.get("INDEX_BACKEND", default.index_backend).lower()
     if backend not in INDEX_BACKENDS:
         raise ValueError(f"INDEX_BACKEND must be one of {INDEX_BACKENDS}, got {backend!r}")
+    embedder = env.get("EMBEDDER", default.embedder).lower()
+    if embedder not in EMBEDDERS:
+        raise ValueError(f"EMBEDDER must be one of {EMBEDDERS}, got {embedder!r}")
     return Settings(
         ollama_host=_with_scheme(env.get("OLLAMA_HOST", default.ollama_host)),
         embed_model=env.get("EMBED_MODEL", default.embed_model),
         gen_model=env.get("GEN_MODEL", default.gen_model),
         data_dir=Path(env.get("DATA_DIR", str(default.data_dir))),
+        embedder=embedder,
         index_backend=backend,
         tavily_monthly_cap=int(env.get("TAVILY_MONTHLY_CAP", default.tavily_monthly_cap)),
         web_fallback_threshold=float(
