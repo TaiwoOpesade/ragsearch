@@ -214,10 +214,10 @@ def save_another(tmp_path, source):
 def test_a_save_during_a_load_is_never_missed(tmp_path, monkeypatch):
     import threading
 
-    from ragsearch import store as store_module
+    from ragsearch import indexfile
 
     saved(tmp_path, "first.md")
-    real_load = store_module.np.load
+    real_load = indexfile.np.load
     writer: list[threading.Thread] = []
 
     def slow_load(*args, **kwargs):
@@ -228,7 +228,7 @@ def test_a_save_during_a_load_is_never_missed(tmp_path, monkeypatch):
             writer[0].join(timeout=1.0)
         return data
 
-    monkeypatch.setattr(store_module.np, "load", slow_load)
+    monkeypatch.setattr(indexfile.np, "load", slow_load)
     reader = Store(tmp_path, embedder_name="hash-3")
     monkeypatch.undo()
     writer[0].join(timeout=10)
@@ -247,14 +247,14 @@ def test_save_waits_for_a_reader_that_has_the_index_open(tmp_path):
 
 
 def test_unreadable_index_is_not_called_damaged(tmp_path, monkeypatch):
-    from ragsearch import store as store_module
+    from ragsearch import indexfile
 
     saved(tmp_path, "a.md")
 
     def denied(path):
         raise PermissionError(13, "Access is denied", str(path))
 
-    monkeypatch.setattr(store_module, "_read_bytes", denied)
+    monkeypatch.setattr(indexfile, "read_bytes", denied)
     with pytest.raises(StoreError) as exc:
         Store(tmp_path, embedder_name="hash-3")
     assert "could not be read" in str(exc.value)
@@ -262,14 +262,14 @@ def test_unreadable_index_is_not_called_damaged(tmp_path, monkeypatch):
 
 
 def test_a_failed_save_is_a_store_error(tmp_path, monkeypatch):
-    from ragsearch import store as store_module
+    from ragsearch import indexfile
 
     def denied(path, data, **kwargs):
         raise PermissionError(13, "Access is denied", str(path))
 
     store = Store(tmp_path, embedder_name="hash-3")
     store.replace("a.md", "h", vecs([1, 0, 0]), items("a.md", 1))
-    monkeypatch.setattr(store_module, "atomic_write_bytes", denied)
+    monkeypatch.setattr(indexfile, "atomic_write_bytes", denied)
     with pytest.raises(StoreError, match="could not be saved"):
         store.save()
 

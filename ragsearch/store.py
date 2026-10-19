@@ -1,9 +1,8 @@
-"""Persist chunk vectors, their text and a per-source manifest in ``index.npz``.
+"""Keep chunk vectors, their text and a per-source manifest, saved in ``index.npz``.
 
 The manifest records a content hash for every source, so unchanged sources can
-be skipped on re-ingest and changed sources replace their old chunks. It lives
-*inside* ``index.npz`` so one atomic write saves everything together;
-``manifest.json`` is a human-readable copy that is never trusted on load.
+be skipped on re-ingest and changed sources replace their old chunks. The file
+format itself lives in ``indexfile.py``.
 
 Several processes may share a data dir (say the API server and a CLI ingest).
 Reads and saves both take the data dir's lock, so a save never lands half-way
@@ -12,48 +11,22 @@ Each read records the fingerprint of the exact file it read; if another process
 saved since, a save merges its sources in rather than overwriting them.
 """
 
-import io
-import json
 import logging
-import os
-import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 
-from ragsearch.fileutil import LockTimeout, atomic_write_bytes, file_lock
-from ragsearch.index import (
-    Index,
-    SearchResult,
-    VectorIndex,
-    decode_json,
-    encode_json,
-    npz_bytes,
-)
+from ragsearch import indexfile
+from ragsearch.fileutil import LockTimeout, file_lock, reader_lock
+from ragsearch.index import Index, SearchResult, VectorIndex
 
 log = logging.getLogger(__name__)
-
-# Problems with the file's contents (as opposed to not being able to read it).
-_DAMAGE = (ValueError, KeyError, TypeError, zipfile.BadZipFile, EOFError)
 
 
 class StoreError(RuntimeError):
     """Raised when stored data is damaged or inconsistent with what is being added."""
-
-
-def _signature(st: os.stat_result) -> tuple:
-    return st.st_mtime_ns, st.st_size, st.st_ino
-
-
-def _read_bytes(path: Path) -> tuple[bytes, tuple] | None:
-    """The file's bytes and the fingerprint of that same file, or None if it is missing."""
-    try:
-        with open(path, "rb") as f:
-            return f.read(), _signature(os.fstat(f.fileno()))
-    except FileNotFoundError:
-        return None
 
 
 class Store:
@@ -143,12 +116,8 @@ class Store:
                     self._merge_from_disk()  # another process saved: keep its sources too
                 manifest = {"embedder": self.embedder_name, "sources": self._sources}
                 vectors = self._vectors() if self._items else np.zeros((0, 0), np.float32)
-                atomic_write_bytes(self._index_path, npz_bytes(
-                    vectors=vectors, items=encode_json(self._items),
-                    manifest=encode_json(manifest)))
-                # The readable copy escapes non-ASCII, so odd file names cannot break it.
-                atomic_write_bytes(self._manifest_path,
-                                   json.dumps(manifest, indent=2).encode("ascii"))
+                indexfile.write(self._index_path, self._manifest_path, vectors,
+                                self._items, manifest)
                 self._signature = self._disk_signature()  # our own file: lock still held
                 self._dirty.clear()
         except (LockTimeout, OSError) as err:
@@ -158,23 +127,11 @@ class Store:
 
     @contextmanager
     def _reading(self) -> Iterator[None]:
-        """Hold the data dir's lock while reading, if the lock file can be opened.
-
-        A read-only data dir cannot hold a lock file; reading it unlocked is safe,
-        since nothing can be saving into it either.
-        """
-        lock = file_lock(self.data_dir / ".lock")
         try:
-            lock.__enter__()
+            with reader_lock(self.data_dir / ".lock"):
+                yield
         except LockTimeout as err:
             raise StoreError(str(err)) from err
-        except OSError:
-            yield
-            return
-        try:
-            yield
-        finally:
-            lock.__exit__(None, None, None)
 
     def _changed(self, source: str) -> None:
         self._dirty.add(source)
@@ -195,28 +152,24 @@ class Store:
 
     def _disk_signature(self) -> tuple | None:
         try:
-            return _signature(self._index_path.stat())
+            return indexfile.signature(self._index_path.stat())
         except FileNotFoundError:
             return None
 
     def _read_disk(self) -> tuple[dict, list[dict], np.ndarray, tuple] | None:
         """Parse index.npz (call with the lock held) and return its fingerprint too."""
         try:
-            found = _read_bytes(self._index_path)
+            found = indexfile.read_bytes(self._index_path)
             if found is None:
                 if self._manifest_path.exists():
                     log.warning("%s is missing; every source will be ingested again",
                                 self._index_path)
                 return None
             raw, signature = found
-            with np.load(io.BytesIO(raw), allow_pickle=False) as data:
-                vectors = data["vectors"]
-                items = decode_json(data["items"])
-                manifest = (decode_json(data["manifest"]) if "manifest" in data.files
-                            else json.loads(self._manifest_path.read_text(encoding="utf-8")))
+            vectors, items, manifest = indexfile.parse(raw, self._manifest_path)
             sources = dict(manifest["sources"])
             embedder = manifest["embedder"]
-        except _DAMAGE as err:
+        except indexfile.DAMAGE as err:
             raise StoreError(
                 f"{self.data_dir} is damaged ({type(err).__name__}: {err}). "
                 "Delete it to start again, or use another --data-dir."
@@ -228,13 +181,7 @@ class Store:
                 f"{self.data_dir} was built with embedder {embedder!r}, "
                 f"not {self.embedder_name!r}. Use the same --embedder or another data dir."
             )
-        counts: dict[str, int] = {}
-        for item in items:
-            counts[item["source"]] = counts.get(item["source"], 0) + 1
-        for source in set(counts) | set(sources):
-            if sources.get(source, {}).get("chunks") != counts.get(source, 0):
-                sources[source] = {"hash": None, "chunks": counts.get(source, 0)}  # re-ingest
-        return sources, items, vectors, signature
+        return indexfile.reconcile(sources, items), items, vectors, signature
 
     def _load(self) -> None:
         if not self._index_path.exists():  # nothing to read, so create nothing either

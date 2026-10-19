@@ -154,3 +154,20 @@ def test_a_permission_error_fails_at_once_instead_of_spinning(tmp_path, monkeypa
     with pytest.raises(PermissionError), file_lock(tmp_path / "x.lock", timeout=30):
         pass
     assert time.monotonic() - started < 2
+
+
+def test_reader_lock_reads_anyway_when_the_folder_cannot_hold_a_lock(tmp_path):
+    from ragsearch.fileutil import reader_lock
+
+    blocked = tmp_path / "x.lock"
+    blocked.mkdir()  # the lock file cannot be created, as in a read-only folder
+    with reader_lock(blocked):
+        pass  # no error: reading goes ahead unlocked
+
+
+def test_reader_lock_still_waits_for_a_writer(tmp_path):
+    from ragsearch.fileutil import reader_lock
+
+    lock = tmp_path / "x.lock"
+    with file_lock(lock), pytest.raises(LockTimeout), reader_lock(lock, timeout=0.2):
+        pass

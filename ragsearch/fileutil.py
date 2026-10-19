@@ -104,3 +104,19 @@ def file_lock(path: str | Path, timeout: float = 30.0, poll: float = 0.02) -> It
             _unlock(fd)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def reader_lock(path: str | Path, timeout: float = 30.0) -> Iterator[None]:
+    """Like ``file_lock``, for readers: if the lock file cannot be opened at all (a
+    read-only folder), read without it. Nothing can be saving into such a folder."""
+    lock = file_lock(path, timeout)
+    try:
+        lock.__enter__()  # LockTimeout (a writer holds it too long) propagates
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
