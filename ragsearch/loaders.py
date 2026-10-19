@@ -123,8 +123,12 @@ def load_documents(
 ) -> Iterator[Document]:
     """Yield a ``Document`` for every supported file at ``path`` (recursive)."""
     for file in _find_files(Path(path)):
+        source = file.resolve().as_posix()
+        if _SURROGATE.search(source):  # an undecodable file name: unstorable and unprintable
+            log.warning("Skipping %s: its name is not valid Unicode; rename it", ascii(source))
+            continue
         if file.suffix.lower() == ".pdf":
             segments = partial(_pdf_segments, file)
         else:
             segments = partial(_text_segments, file, segment_chars)
-        yield Document(source=file.resolve().as_posix(), segments=segments)
+        yield Document(source=source, segments=segments)

@@ -143,3 +143,29 @@ def test_binary_file_with_a_text_extension_is_rejected(tmp_path):
 def test_clean_text_replaces_lone_surrogates():
     assert clean_text("integral \ud835 over x") == "integral � over x"
     assert clean_text("plain") == "plain"
+
+
+def test_file_names_that_are_not_valid_unicode_are_skipped(tmp_path, monkeypatch, caplog):
+    # On Linux an undecodable name arrives as a lone surrogate (e.g. "caf\udce9.md").
+    # Such a name cannot be stored or shown, so the file is skipped with a warning.
+    from ragsearch import loaders
+
+    good = tmp_path / "good.md"
+    good.write_text("fine", encoding="utf-8")
+
+    class UndecodableName:
+        suffix = ".md"
+
+        def resolve(self):
+            return self
+
+        def as_posix(self):
+            return str(tmp_path.as_posix()) + "/caf\udce9.md"
+
+    monkeypatch.setattr(loaders, "_find_files", lambda path: [good, UndecodableName()])
+    with caplog.at_level(logging.WARNING):
+        docs = list(load_documents(tmp_path))
+    assert [d.source.rsplit("/", 1)[-1] for d in docs] == ["good.md"]
+    assert "not valid Unicode" in caplog.text
+    assert "caf\\udce9.md" in caplog.text  # shown escaped...
+    assert "\udce9" not in caplog.text  # ...never as a raw surrogate
