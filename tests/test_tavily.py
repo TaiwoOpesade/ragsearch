@@ -173,7 +173,7 @@ def flaky(statuses):
 
 
 def test_temporarily_unavailable_is_retried_then_succeeds(stub_server, budget):
-    stub_server.routes["/search"] = flaky([503, 502])
+    stub_server.routes["/search"] = flaky([503, 503])
     sleep = RecordingSleep()
     client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, sleep=sleep)
     results = client.search("stack")
@@ -191,6 +191,20 @@ def test_gives_up_after_the_retries_are_used(stub_server, budget):
         client.search("stack")
     assert len(stub_server.requests) == 3
     assert budget.used == 0
+
+
+@pytest.mark.parametrize("status", [502, 504])
+def test_gateway_errors_keep_the_charge_and_are_never_retried(stub_server, budget, status):
+    # The request reached Tavily's gateway, so the backend may still finish and charge
+    # it. A long crawl is the likeliest case, and a retry could pay for it twice.
+    stub_server.routes["/crawl"] = (status, {}, {"detail": {"error": "gateway"}})
+    sleep = RecordingSleep()
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, sleep=sleep)
+    with pytest.raises(TavilyError, match="may have been charged"):
+        client.crawl("https://docs.example", max_pages=30)
+    assert budget.used == 9  # the worst case for 30 pages stays counted
+    assert len(stub_server.requests) == 1
+    assert sleep.calls == []
 
 
 @pytest.mark.parametrize("status", [400, 401, 429, 432, 500])

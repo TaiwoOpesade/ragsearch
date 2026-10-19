@@ -33,8 +33,12 @@ MAX_SEARCH_RESULTS = 20
 CRAWL_TIMEOUT = 180.0  # Tavily's own crawl timeout defaults to 150 s
 # Only failures where a retry cannot double-charge: the request never arrived, or
 # Tavily said it is temporarily unavailable (it does not charge failed calls).
-RETRY_STATUSES = {502, 503, 504}
+RETRY_STATUSES = {503}
+# A gateway error means the request reached Tavily, whose backend may still finish
+# (and charge) it, so the credits stay counted and the call is never resent.
+GATEWAY_STATUSES = {502, 504}
 RETRY_DELAYS = (0.5, 1.0)  # seconds to wait before the 2nd and 3rd attempts
+_COUNTED = "the call may have been charged, so it was counted."
 
 
 class TavilyError(RuntimeError):
@@ -171,10 +175,12 @@ class TavilyClient:
             except httpx.HTTPError as err:  # sent, no answer: a retry could double-charge
                 raise _MaybeCharged(self._redact(
                     f"No answer from Tavily at {self._base_url} ({type(err).__name__}); "
-                    "the call may have been charged, so it was counted.")) from err
+                    f"{_COUNTED}")) from err
             else:
                 if response.status_code == 200:
                     return self._parse(response)
+                if response.status_code in GATEWAY_STATUSES:
+                    raise _MaybeCharged(self._redact(f"{_describe_error(response)}; {_COUNTED}"))
                 if response.status_code not in RETRY_STATUSES or delay is None:
                     raise _NotCharged(self._redact(_describe_error(response)))
             log.warning("Tavily request failed (attempt %d), retrying in %.1fs", attempt + 1,
@@ -188,8 +194,7 @@ class TavilyClient:
         except ValueError:
             payload = None
         if not isinstance(payload, dict):
-            raise _MaybeCharged("Tavily sent an unreadable reply; the call may have been "
-                                "charged, so it was counted.")
+            raise _MaybeCharged(f"Tavily sent an unreadable reply; {_COUNTED}")
         return payload
 
     def _redact(self, message: str) -> str:
