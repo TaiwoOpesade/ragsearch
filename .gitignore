@@ -15,3 +15,6 @@ data/
 # Original Stage 1 archive and an unrelated empty scratch file (not part of the project)
 rag_search_stage1.zip
 app.py
+
+# Claude Code agent worktrees (temporary copies of this repo)
+.claude/worktrees/
