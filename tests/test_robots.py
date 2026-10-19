@@ -88,3 +88,37 @@ def test_percent_encoding_is_compared_consistently():
 def test_allow_all_and_disallow_all():
     assert RobotsRules.allow_all().allowed("/x")
     assert not RobotsRules.disallow_all().allowed("/x")
+
+
+# --- percent-encoding, BOM and speed (second review) ---------------------------------
+
+
+def test_encoded_star_and_dollar_are_literal_characters():
+    r = rules("User-agent: *\nDisallow: /price%24\nDisallow: /a%2Ab\n")
+    assert not r.allowed("/price$list")  # %24 is a literal "$", not an end anchor
+    assert r.allowed("/aXb")  # %2A is a literal "*", not a wildcard
+    assert not r.allowed("/a*b")
+
+
+def test_an_encoded_newline_cannot_defeat_a_wildcard():
+    assert not rules("User-agent: *\nDisallow: /*.pdf$\n").allowed("/a%0Ab.pdf")
+
+
+def test_specificity_uses_the_normalised_rule_length():
+    # "/%61%62%63" is just "/abc": it must not out-rank the longer Disallow.
+    r = rules("User-agent: *\nAllow: /%61%62%63\nDisallow: /abc/def\n")
+    assert not r.allowed("/abc/def/x")
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_group():
+    assert not rules("﻿User-agent: *\nDisallow: /\n").allowed("/anything")
+
+
+def test_matching_stays_fast_for_hostile_wildcard_rules():
+    import time
+
+    hostile = "/" + "*a" * 15 + "*b$"
+    r = rules(f"User-agent: *\nDisallow: {hostile}\n")
+    started = time.perf_counter()
+    assert r.allowed("/" + "a" * 2000)  # no "b": cannot match
+    assert time.perf_counter() - started < 0.1

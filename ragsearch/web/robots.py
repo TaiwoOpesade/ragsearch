@@ -8,33 +8,83 @@ implements what the RFC requires:
 * the longest (most specific) matching rule wins, and ``Allow`` wins a tie;
 * ``*`` matches any sequence and a trailing ``$`` anchors the end of the path;
 * ``/robots.txt`` itself is always allowed.
+
+Rules and paths are compared in one canonical percent-encoded form, so ``%2A`` and
+``%24`` stay literal characters and ``%0A`` cannot slip past a wildcard. Matching
+uses no regular expressions: a greedy scan runs in linear time, so a hostile
+robots.txt cannot stall the crawler.
 """
 
-import re
+import string
 from dataclasses import dataclass
-from urllib.parse import unquote
+
+_UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+_HEX = frozenset(string.hexdigits)
+
+
+def _canonical(text: str, literal_specials: bool) -> str:
+    """Percent-encode ``text`` the one canonical way (RFC 3986 normalisation).
+
+    Escapes of unreserved characters are decoded, other escapes get upper-case hex,
+    and non-ASCII characters are encoded as UTF-8. In a URL path (``literal_specials``)
+    a raw ``*`` or ``$`` is data, so it is encoded to match how a rule must write it.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch, escape = text[i], text[i + 1 : i + 3]
+        if ch == "%" and len(escape) == 2 and set(escape) <= _HEX:
+            decoded = chr(int(escape, 16))
+            out.append(decoded if decoded in _UNRESERVED else "%" + escape.upper())
+            i += 3
+            continue
+        if literal_specials and ch in "*$":
+            out.append(f"%{ord(ch):02X}")
+        elif ord(ch) > 127:
+            out.append("".join(f"%{b:02X}" for b in ch.encode("utf-8", "surrogatepass")))
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 @dataclass(frozen=True)
 class _Rule:
     allow: bool
     length: int
-    pattern: re.Pattern
+    parts: tuple[str, ...]  # the pattern split on "*"
+    anchored: bool  # the pattern ended with "$"
 
+    @classmethod
+    def build(cls, allow: bool, path: str) -> "_Rule":
+        pattern = _canonical(path, literal_specials=False)
+        anchored = pattern.endswith("$")
+        body = pattern[:-1] if anchored else pattern
+        return cls(allow, len(pattern), tuple(body.split("*")), anchored)
 
-def _compile(path: str) -> re.Pattern:
-    path = unquote(path)
-    anchored = path.endswith("$")
-    body = path[:-1] if anchored else path
-    regex = ".*".join(re.escape(part) for part in body.split("*"))
-    return re.compile(regex + (r"\Z" if anchored else ""))
+    def matches(self, path: str) -> bool:
+        first, *rest = self.parts
+        if not path.startswith(first):
+            return False
+        if not rest:
+            return path == first if self.anchored else True
+        pos = len(first)
+        for middle in rest[:-1]:  # leftmost match of each piece leaves the most room
+            found = path.find(middle, pos)
+            if found < 0:
+                return False
+            pos = found + len(middle)
+        last = rest[-1]
+        if self.anchored:
+            return len(path) - len(last) >= pos and path.endswith(last)
+        return path.find(last, pos) >= 0
 
 
 def _parse_groups(text: str) -> list[tuple[list[str], list[tuple[bool, str]]]]:
     groups: list[tuple[list[str], list[tuple[bool, str]]]] = []
     agents: list[str] = []
     rules: list[tuple[bool, str]] | None = None
-    for raw in text.splitlines():
+    for raw in text.removeprefix("﻿").splitlines():
         line = raw.split("#", 1)[0].strip()
         key, sep, value = line.partition(":")
         if not sep:
@@ -73,21 +123,16 @@ class RobotsRules:
         groups = _parse_groups(text)
         ours = [r for agents, r in groups if any(a.split("/", 1)[0] == token for a in agents)]
         chosen = ours or [r for agents, r in groups if "*" in agents]
-        rules = [
-            _Rule(allow, len(path), _compile(path))
-            for group in chosen
-            for allow, path in group
-        ]
-        return cls(rules)
+        return cls([_Rule.build(allow, path) for group in chosen for allow, path in group])
 
     def allowed(self, path: str) -> bool:
         """Whether ``path`` (URL path plus any ``?query``) may be fetched."""
-        path = unquote(path or "/")
+        path = _canonical(path or "/", literal_specials=True)
         if path == "/robots.txt":
             return True
         best: _Rule | None = None
         for rule in self._rules:
-            if rule.pattern.match(path) and (
+            if rule.matches(path) and (
                 best is None
                 or rule.length > best.length
                 or (rule.length == best.length and rule.allow)
