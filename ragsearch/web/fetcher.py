@@ -30,8 +30,18 @@ USER_AGENT = "ragsearch/0.1 (local research crawler)"
 MIN_DELAY = 1.0
 MAX_BYTES = 5_000_000
 MAX_ROBOTS_REDIRECTS = 5  # RFC 9309 asks crawlers to follow at least five
+ROBOTS_TTL = 24 * 3600.0  # RFC 9309: do not use a cached robots.txt for over 24 h
+ROBOTS_ERROR_TTL = 300.0  # a "don't crawl" caused by an error is retried sooner
 
 _CHARSET = re.compile(r"charset=[\"']?([\w.:-]+)", re.IGNORECASE)
+
+
+def _decode(body: bytes, charset: str) -> str:
+    """Decode with ``charset``, falling back to UTF-8 if that codec cannot decode."""
+    try:
+        return body.decode(charset, errors="replace")
+    except (LookupError, UnicodeError):  # e.g. charset=undefined
+        return body.decode("utf-8", errors="replace")
 
 
 class FetchError(RuntimeError):
@@ -51,13 +61,15 @@ class _Response(NamedTuple):
     location: str | None
 
     def charset(self) -> str | None:
+        """The declared text encoding, or None (also for bytes codecs like base64)."""
         match = _CHARSET.search(self.content_type)
         if not match:
             return None
         try:
-            return codecs.lookup(match.group(1)).name
+            info = codecs.lookup(match.group(1))
         except LookupError:
             return None
+        return info.name if getattr(info, "_is_text_encoding", True) else None
 
 
 class _LinkParser(HTMLParser):
@@ -102,7 +114,7 @@ class Fetcher:
         self._delay, self._timeout, self._max_bytes = delay, timeout, max_bytes
         self._sleep, self._clock = sleep, clock
         self._last_request: float | None = None
-        self._robots: dict[str, RobotsRules] = {}
+        self._robots: dict[str, tuple[RobotsRules, float]] = {}  # root -> (rules, expires)
 
     def fetch(self, url: str) -> Page:
         """Fetch one page (following same-host redirects) and return its main text."""
@@ -139,14 +151,14 @@ class Fetcher:
                 log.info("Skipping %s: not HTML (%s)", url, response.content_type)
             else:
                 charset = response.charset()
-                # With no declared charset, give trafilatura the bytes so it can detect it.
-                html = response.body.decode(charset, errors="replace") if charset else None
+                # With no usable charset, give trafilatura the bytes so it can detect it.
+                html = _decode(response.body, charset) if charset else None
                 text = trafilatura.extract(html if html is not None else response.body, url=url)
                 if text:
                     yield Page(url=url, text=text)
                 if depth < max_depth:
-                    source = html or response.body.decode("utf-8", errors="replace")
-                    links = [(link, depth + 1) for link in _links(source)]
+                    source = html if html is not None else _decode(response.body, "utf-8")
+                    links = [(link, depth + 1) for link in _links(source, url)]
 
             for link, link_depth in links:
                 target = _resolve(url, link)
@@ -161,31 +173,36 @@ class Fetcher:
     def _allowed(self, url: str) -> bool:
         parts = urlsplit(url)
         root = f"{parts.scheme}://{parts.netloc}"
-        if root not in self._robots:
-            self._robots[root] = self._fetch_robots(root + "/robots.txt")
+        cached = self._robots.get(root)
+        if cached is None or self._clock() >= cached[1]:
+            rules, ttl = self._fetch_robots(root + "/robots.txt")
+            cached = self._robots[root] = (rules, self._clock() + ttl)
         path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-        return self._robots[root].allowed(path)
+        return cached[0].allowed(path)
 
-    def _fetch_robots(self, url: str) -> RobotsRules:
+    def _fetch_robots(self, url: str) -> tuple[RobotsRules, float]:
+        """The site's rules and how long to trust them (errors are re-checked sooner)."""
         for _ in range(MAX_ROBOTS_REDIRECTS + 1):
             try:
                 response = self._get(url)
             except FetchError:
-                return RobotsRules.disallow_all()  # unreachable: be conservative
+                return RobotsRules.disallow_all(), ROBOTS_ERROR_TTL  # unsure: don't crawl
             if response.location:
                 target = _resolve(url, response.location)
                 if target is None:
-                    return RobotsRules.allow_all()
+                    return RobotsRules.allow_all(), ROBOTS_TTL
                 url = target
                 continue
             status = response.status
             if status == 200:
-                body = response.body.decode(response.charset() or "utf-8", errors="replace")
-                return RobotsRules.parse(body, USER_AGENT)
+                charset = response.charset() or "utf-8"
+                body = _decode(response.body, "utf-8-sig" if charset == "utf-8" else charset)
+                return RobotsRules.parse(body, USER_AGENT), ROBOTS_TTL
             if status in (401, 403, 429) or status >= 500:
-                return RobotsRules.disallow_all()  # forbidden, rate-limited or erroring
-            return RobotsRules.allow_all()  # 404 and other 4xx: no robots.txt
-        return RobotsRules.allow_all()  # too many redirects: treated as unavailable (RFC 9309)
+                return RobotsRules.disallow_all(), ROBOTS_ERROR_TTL  # forbidden or erroring
+            return RobotsRules.allow_all(), ROBOTS_TTL  # 404 and other 4xx: no robots.txt
+        # Too many redirects: treated as unavailable (RFC 9309).
+        return RobotsRules.allow_all(), ROBOTS_TTL
 
     def _wait_politely(self) -> None:
         if self._last_request is not None:
@@ -208,14 +225,17 @@ class Fetcher:
                 location = r.headers.get("Location") if r.is_redirect else None
                 return _Response(r.status_code, r.headers.get("Content-Type", ""),
                                  bytes(body), location)
-        except requests.RequestException as err:
+        except (requests.RequestException, ValueError) as err:  # ValueError: unparseable URL
             raise FetchError(f"request failed: {err}") from err
         finally:
             # Measure the gap from when this response finished, not when it started.
             self._last_request = self._clock()
 
 
-def _links(html: str) -> list[str]:
+def _links(html: str, url: str) -> list[str]:
     parser = _LinkParser()
-    parser.feed(html)
+    try:
+        parser.feed(html)
+    except (AssertionError, ValueError) as err:  # older HTMLParser releases, odd markup
+        log.info("Stopped reading links on %s: %s", url, err)
     return parser.links

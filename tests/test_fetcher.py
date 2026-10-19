@@ -193,6 +193,23 @@ def test_non_utf8_page_is_decoded_using_its_charset(stub_server, fake_time):
     assert "�" not in text
 
 
+@pytest.mark.parametrize("charset", ["base64", "zlib", "hex", "rot13", "undefined"])
+def test_a_charset_that_cannot_decode_text_is_ignored(stub_server, fake_time, charset):
+    # Python's codec registry also holds bytes-to-bytes codecs such as base64,
+    # which bytes.decode refuses, and "undefined", which always fails.
+    declared = {"Content-Type": f"text/html; charset={charset}"}
+    stub_server.routes.update({
+        "/robots.txt": (200, {"Content-Type": f"text/plain; charset={charset}"},
+                        "User-agent: *\nDisallow: /private\n"),
+        "/": (200, declared, page("Home", "Home page text.", ["/private/secret", "/next"])),
+        "/next": (200, declared, page("Next", "Next page text.")),
+        "/private/secret": (200, HTML, page("Secret", "must never be fetched")),
+    })
+    pages = list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
+    assert [p.url.removeprefix(stub_server.url) for p in pages] == ["/", "/next"]
+    assert "/private/secret" not in stub_server.paths  # robots.txt was still obeyed
+
+
 def test_malformed_link_is_skipped_and_the_crawl_continues(stub_server, fake_time):
     stub_server.routes.update({
         "/": (200, HTML, page("Home", "Home page text.", ["http://[oops", "/good"])),
@@ -214,3 +231,54 @@ def test_politeness_gap_is_measured_from_the_end_of_a_slow_response(stub_server,
     list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
     # robots.txt, then a full 1 s wait before "/", then a full 1 s wait before "/next"
     assert fake_time.sleeps == [1.0, 1.0]
+
+
+# --- robustness and robots.txt caching (second review) --------------------------------
+
+
+def test_robots_redirect_to_an_unparseable_host_does_not_crash(stub_server, fake_time):
+    bad_host = "http://" + "a" * 70 + ".example/robots.txt"  # a DNS label over 63 chars
+    stub_server.routes.update({
+        "/robots.txt": (301, {"Location": bad_host}, ""),
+        "/": (200, HTML, page("Home", "must never be fetched")),
+    })
+    assert list(make_fetcher(fake_time).crawl(stub_server.url + "/")) == []
+    assert "/" not in stub_server.paths  # unsure about robots.txt, so nothing is crawled
+
+
+def test_a_page_that_breaks_the_html_parser_does_not_stop_the_crawl(stub_server, fake_time,
+                                                                     monkeypatch):
+    from ragsearch.web import fetcher as fetcher_module
+
+    def broken_feed(self, data):
+        raise AssertionError("unknown status keyword 'foo' in marked section")
+
+    monkeypatch.setattr(fetcher_module._LinkParser, "feed", broken_feed)
+    stub_server.routes["/"] = (200, HTML, page("Home", "Readable home page text.", ["/next"]))
+    pages = list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
+    assert [p.url.removeprefix(stub_server.url) for p in pages] == ["/"]
+
+
+def test_robots_txt_is_fetched_again_after_a_day(stub_server, fake_time):
+    fetcher = make_fetcher(fake_time)
+    stub_server.routes["/robots.txt"] = (200, {}, "User-agent: *\nAllow: /\n")
+    stub_server.routes["/"] = (200, HTML, page("Home", "Home page text."))
+    assert len(list(fetcher.crawl(stub_server.url + "/"))) == 1
+
+    stub_server.routes["/robots.txt"] = (200, {}, "User-agent: *\nDisallow: /\n")
+    fake_time.now += 3600  # an hour later: the cached copy still applies
+    assert len(list(fetcher.crawl(stub_server.url + "/"))) == 1
+    fake_time.now += 24 * 3600  # a day later: robots.txt is read again
+    assert list(fetcher.crawl(stub_server.url + "/")) == []
+    assert stub_server.paths.count("/robots.txt") == 2
+
+
+def test_a_robots_txt_error_is_only_cached_for_a_few_minutes(stub_server, fake_time):
+    fetcher = make_fetcher(fake_time)
+    stub_server.routes["/robots.txt"] = (503, {}, "down")
+    stub_server.routes["/"] = (200, HTML, page("Home", "Home page text."))
+    assert list(fetcher.crawl(stub_server.url + "/")) == []
+
+    stub_server.routes["/robots.txt"] = (404, {}, "none")  # the site recovered
+    fake_time.now += 600
+    assert len(list(fetcher.crawl(stub_server.url + "/"))) == 1
