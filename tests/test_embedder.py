@@ -179,3 +179,10 @@ def test_ollama_error_message_is_included(stub_server):
     stub_server.routes["/api/embed"] = (404, {}, {"error": "model 'nope' not found"})
     with pytest.raises(EmbeddingError, match="not found"):
         OllamaEmbedder(model="nope", host=stub_server.url).embed(["a"])
+
+
+def test_prefixed_embedder_has_its_own_name_so_old_indexes_are_not_mixed():
+    prefixed = make_embedder("ollama", model="nomic-embed-text")
+    plain = OllamaEmbedder(model="nomic-embed-text")
+    assert prefixed.name == "ollama-nomic-embed-text+prefix"
+    assert plain.name == "ollama-nomic-embed-text"

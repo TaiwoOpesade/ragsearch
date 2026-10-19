@@ -90,7 +90,9 @@ class OllamaEmbedder:
         self.timeout = timeout
         self.document_prefix = document_prefix
         self.query_prefix = query_prefix
-        self.name = f"ollama-{model}"
+        # The prefixes change every vector, so they are part of the name: an index built
+        # without them is then refused instead of silently mixed with new vectors.
+        self.name = f"ollama-{model}" + ("+prefix" if document_prefix or query_prefix else "")
         self._dim: int | None = None
 
     @property
