@@ -172,3 +172,21 @@ def test_localhost_is_rewritten_to_ipv4(value, expected):
     # On Windows "localhost" tries IPv6 (::1) first; Ollama listens on IPv4 only,
     # which cost ~5 s per request before falling back.
     assert load_settings({"OLLAMA_HOST": value}).ollama_host == expected
+
+
+def test_dotenv_quoted_value_followed_by_a_comment_loses_its_quotes(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(
+        'TAVILY_API_KEY="tvly-abc"  # personal key\n'
+        "DATA_DIR='my data' # where the index lives\n"
+        "GEN_MODEL=qwen2.5:3b\t# a tab before the comment\n",
+        encoding="utf-8",
+    )
+    assert read_dotenv(path) == {
+        "TAVILY_API_KEY": "tvly-abc", "DATA_DIR": "my data", "GEN_MODEL": "qwen2.5:3b"}
+
+
+def test_dotenv_keeps_a_hash_that_is_part_of_an_unquoted_value(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("GEN_MODEL=model#v2\n", encoding="utf-8")
+    assert read_dotenv(path) == {"GEN_MODEL": "model#v2"}

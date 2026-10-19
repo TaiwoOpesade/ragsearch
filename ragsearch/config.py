@@ -7,6 +7,7 @@ raises ``ConfigError`` naming the variable, so a typo never becomes a traceback.
 
 import math
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
 T = TypeVar("T")
+
+_INLINE_COMMENT = re.compile(r"\s#")
 
 INDEX_BACKENDS = ("numpy", "faiss")
 EMBEDDERS = ("ollama", "hash")
@@ -34,6 +37,8 @@ class Settings:
     tavily_monthly_cap: int = 800
     # Measured with nomic-embed-text: on-topic best scores 0.61-0.81, off-topic 0.46-0.49.
     web_fallback_threshold: float = 0.55
+    # Host names the API answers to; anything else gets HTTP 400 (blocks DNS rebinding).
+    allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost")
     # repr=False keeps the key out of logs, tracebacks and print(settings).
     tavily_api_key: str | None = field(default=None, repr=False)
 
@@ -66,7 +71,8 @@ def read_dotenv(path: str | Path) -> dict[str, str]:
     """Parse simple ``KEY=value`` lines from a ``.env`` file (missing file -> ``{}``).
 
     Blank lines, ``#`` comments, lines without ``=`` and empty values are skipped.
-    Matching quotes around a value are removed; an unquoted value ends at `` #``.
+    A quoted value ends at its closing quote (anything after it, such as a
+    comment, is ignored); an unquoted value ends at whitespace followed by ``#``.
     """
     path = Path(path)
     if not path.is_file():
@@ -77,10 +83,11 @@ def read_dotenv(path: str | Path) -> dict[str, str]:
         key, value = key.strip(), value.strip()
         if not sep or not key or key.startswith("#"):
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
+        quote = value[:1]
+        if quote in ("'", '"') and value.find(quote, 1) > 0:
+            value = value[1 : value.find(quote, 1)]
         else:
-            value = value.split(" #", 1)[0].rstrip()
+            value = _INLINE_COMMENT.split(value, maxsplit=1)[0].rstrip()
         if value:
             values[key] = value
     return values
@@ -112,6 +119,13 @@ def _cap(raw: str) -> int:
     return value
 
 
+def _hosts(raw: str) -> tuple[str, ...]:
+    hosts = tuple(h.strip() for h in raw.split(",") if h.strip())
+    if not hosts:
+        raise ValueError("list at least one host name, separated by commas")
+    return hosts
+
+
 def _threshold(raw: str) -> float:
     value = float(raw)
     if not math.isfinite(value):
@@ -139,5 +153,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         web_fallback_threshold=_setting(
             env, "WEB_FALLBACK_THRESHOLD", d.web_fallback_threshold, _threshold
         ),
+        allowed_hosts=_setting(env, "ALLOWED_HOSTS", d.allowed_hosts, _hosts),
         tavily_api_key=_setting(env, "TAVILY_API_KEY", None, str),
     )
