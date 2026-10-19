@@ -12,6 +12,9 @@ class Health(BaseModel):
     chunks: int
     embedder: str
     index_backend: str
+    web_configured: bool = Field(False, description="whether TAVILY_API_KEY is set")
+    web_credits_used: int | None = Field(None, description="Tavily credits used this month")
+    web_credits_cap: int = Field(800, description="TAVILY_MONTHLY_CAP")
 
 
 class IngestRequest(BaseModel):

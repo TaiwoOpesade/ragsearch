@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Search and question your own notes, locally.">
+  <title>ragsearch</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/ui/app.css">
+  <script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="ragsearch home"><span class="brand-mark">rag</span>search</a>
+      <p class="status" id="status">Connecting to the ragsearch server…</p>
+      <button type="button" class="btn" id="add-open">Add documents</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <form class="query" id="query-form" autocomplete="off">
+      <fieldset class="segmented" id="mode">
+        <legend class="visually-hidden">What to do</legend>
+        <input type="radio" name="mode" id="mode-ask" value="ask" checked>
+        <label for="mode-ask">Ask</label>
+        <input type="radio" name="mode" id="mode-search" value="search">
+        <label for="mode-search">Search</label>
+      </fieldset>
+
+      <div class="query-row">
+        <label for="q" class="visually-hidden" id="q-label">Your question</label>
+        <textarea id="q" name="q" rows="1" required
+                  placeholder="Ask a question about your notes"></textarea>
+        <button type="submit" class="btn btn-primary" id="go">Ask</button>
+        <button type="button" class="btn" id="stop" hidden>Stop</button>
+      </div>
+
+      <div class="options">
+        <label class="option">
+          Sources
+          <select id="k" name="k">
+            <option value="3">3</option>
+            <option value="5" selected>5</option>
+            <option value="8">8</option>
+            <option value="12">12</option>
+          </select>
+        </label>
+        <label class="option" id="web-option">
+          <input type="checkbox" id="web" name="web">
+          Use the web if my notes don't cover it
+        </label>
+        <label class="option" id="save-option">
+          <input type="checkbox" id="save-web" name="save_web" disabled>
+          Keep web results in my index
+        </label>
+        <p class="option-note" id="web-note"></p>
+      </div>
+    </form>
+
+    <p class="visually-hidden" id="announcer" aria-live="polite"></p>
+    <section class="output" id="output" aria-label="Results"></section>
+  </main>
+
+  <dialog class="dialog" id="add-dialog" aria-labelledby="add-title">
+    <form class="dialog-form" id="add-form" novalidate>
+      <h2 id="add-title">Add documents</h2>
+
+      <fieldset class="segmented" id="add-kind">
+        <legend class="visually-hidden">Where the documents are</legend>
+        <input type="radio" name="kind" id="kind-files" value="files" checked>
+        <label for="kind-files">Files on this computer</label>
+        <input type="radio" name="kind" id="kind-web" value="web">
+        <label for="kind-web">A web page or site</label>
+      </fieldset>
+
+      <div class="field-group" id="files-fields">
+        <label for="path">Folder or file</label>
+        <input type="text" id="path" name="path" spellcheck="false"
+               placeholder="C:\Users\you\Documents\notes">
+        <p class="hint">Reads .md, .txt and .pdf files, including subfolders. Files you have
+          deleted since the last time are removed from the index.</p>
+      </div>
+
+      <div class="field-group" id="web-fields" hidden>
+        <label for="url">Web address</label>
+        <input type="url" id="url" name="url" spellcheck="false" inputmode="url"
+               placeholder="https://docs.python.org/3/tutorial/">
+        <label class="option">
+          <input type="checkbox" id="crawl" name="crawl">
+          Follow links to other pages on the same site
+        </label>
+        <div class="crawl-limits" id="crawl-limits" hidden>
+          <label>Up to <input type="number" id="max-pages" min="1" max="500" value="30"> pages</label>
+          <label><input type="number" id="max-depth" min="0" max="5" value="2"> links deep</label>
+        </div>
+        <fieldset class="providers">
+          <legend>Fetch with</legend>
+          <label class="provider">
+            <input type="radio" name="provider" value="local" checked>
+            <span><strong>Free crawler</strong>
+              <span class="hint">Obeys robots.txt and waits a second between pages.</span></span>
+          </label>
+          <label class="provider" id="tavily-provider">
+            <input type="radio" name="provider" value="tavily">
+            <span><strong>Tavily</strong>
+              <span class="hint" id="tavily-cost">Faster. Uses Tavily credits.</span></span>
+          </label>
+        </fieldset>
+      </div>
+
+      <div class="dialog-result" id="add-result" aria-live="polite"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="add-cancel">Close</button>
+        <button type="submit" class="btn btn-primary" id="add-submit">Add</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

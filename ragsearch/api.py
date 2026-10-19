@@ -2,18 +2,25 @@
 
     uvicorn --factory ragsearch.api:create_app
 
-Endpoints: GET /health, POST /ingest, POST /search, POST /ask.
+Endpoints: GET /health, POST /ingest, POST /search, POST /ask, and the browser
+interface at GET / (static files in ``ragsearch/ui``).
 
 One process may serve the API while the CLI ingests into the same data dir:
 the store is refreshed before each request and saves merge with each other.
+Only requests whose Host header is in ``ALLOWED_HOSTS`` are answered, which stops
+a web page that re-points its domain at 127.0.0.1 (DNS rebinding) from using the
+API to read local files.
 """
 
+import mimetypes
 import threading
 from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.staticfiles import StaticFiles
 
 from ragsearch.config import ConfigError, Settings, load_settings
 from ragsearch.embedder import EmbeddingError, make_embedder
@@ -41,10 +48,24 @@ from ragsearch.schemas import (
     SearchResponse,
 )
 from ragsearch.store import Store, StoreError
-from ragsearch.web.budget import BudgetExceeded
+from ragsearch.web.budget import BudgetExceeded, CreditBudget
 from ragsearch.web.fetcher import Fetcher, FetchError
 from ragsearch.web.sources import make_tavily, web_documents
 from ragsearch.web.tavily import TavilyClient, TavilyError
+
+UI_DIR = Path(__file__).parent / "ui"
+# The Windows registry can map .js to text/plain, which browsers refuse to run.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
+PAGE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
+        "form-action 'self'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 # Which HTTP status each domain error becomes.
 ERROR_STATUS: dict[type[Exception], int] = {
@@ -77,6 +98,8 @@ def create_app(
     lock = threading.Lock()  # the store is shared by request threads
     fetch_lock = threading.Lock()
     app = FastAPI(title="ragsearch", description="Local-first semantic search and RAG")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
+    app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 
     for error, status in ERROR_STATUS.items():
         def handler(request: Request, exc: Exception, status: int = status) -> JSONResponse:
@@ -99,13 +122,28 @@ def create_app(
                                  persist=save_web, warnings=warnings)
         return hits, warnings
 
+    @app.get("/", include_in_schema=False)
+    def page() -> FileResponse:
+        return FileResponse(UI_DIR / "index.html", headers=PAGE_HEADERS)
+
     @app.get("/health")
     def health() -> Health:
-        with lock:
-            store.refresh()
-            chunks = len(store)
-        return Health(status="ok", chunks=chunks, embedder=embedder.name,
-                      index_backend=settings.index_backend)
+        # Never wait for an ingest or web search: refresh only if the store is free.
+        if lock.acquire(blocking=False):
+            try:
+                store.refresh()
+            finally:
+                lock.release()
+        budget = CreditBudget(store.data_dir / "tavily_usage.json",
+                              cap=settings.tavily_monthly_cap)
+        try:
+            used: int | None = budget.used
+        except BudgetExceeded:  # unreadable usage file
+            used = None
+        return Health(status="ok", chunks=len(store), embedder=embedder.name,
+                      index_backend=settings.index_backend,
+                      web_configured=bool(settings.tavily_api_key),
+                      web_credits_used=used, web_credits_cap=settings.tavily_monthly_cap)
 
     @app.post("/ingest")
     def ingest_endpoint(request: IngestRequest) -> IngestResponse:

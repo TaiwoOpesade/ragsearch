@@ -18,6 +18,11 @@ with warnings.catch_warnings():
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def local_client(app):
+    """A test client whose requests carry Host: 127.0.0.1, as a browser on this machine would."""
+    return TestClient(app, base_url="http://127.0.0.1")
+
+
 class StubGenerator:
     """Answers from the first source and cites it, recording what it was given."""
 
@@ -47,7 +52,7 @@ def generator():
 
 @pytest.fixture
 def client(settings, generator):
-    return TestClient(create_app(settings=settings, generator=generator))
+    return local_client(create_app(settings=settings, generator=generator))
 
 
 @pytest.fixture
@@ -60,7 +65,8 @@ def ingested(client):
 def test_health_reports_status_and_index_size(client):
     body = client.get("/health").json()
     assert body == {"status": "ok", "chunks": 0, "embedder": "hash-512",
-                    "index_backend": "numpy"}
+                    "index_backend": "numpy", "web_configured": True,
+                    "web_credits_used": 0, "web_credits_cap": 800}
 
 
 def test_ingest_path_reports_counts(client):
@@ -116,7 +122,7 @@ def test_ask_with_empty_index_says_it_does_not_know_without_calling_the_model(cl
 
 def test_ask_reports_unavailable_model_as_503(settings):
     app = create_app(settings=settings, generator=FailingGenerator())
-    client = TestClient(app)
+    client = local_client(app)
     client.post("/ingest", json={"path": str(FIXTURES)})
     response = client.post("/ask", json={"question": "what is a stack"})
     assert response.status_code == 503
@@ -129,7 +135,7 @@ def test_ask_with_web_cites_web_sources(stub_server, monkeypatch, settings, gene
         {"title": "Heaps", "url": "https://web.example/heaps",
          "content": "A binary heap keeps the smallest item at the root.", "score": 0.9},
     ]})
-    client = TestClient(create_app(settings=settings, generator=generator))
+    client = local_client(create_app(settings=settings, generator=generator))
     body = client.post("/ask", json={"question": "binary heap smallest item root",
                                      "web": True}).json()
     assert body["citations"] == [{"number": 1, "source": "https://web.example/heaps",
@@ -140,7 +146,7 @@ def test_budget_exhaustion_is_reported_as_429(stub_server, monkeypatch, tmp_path
     monkeypatch.setattr(tavily, "BASE_URL", stub_server.url)
     settings = Settings(data_dir=tmp_path / "data", embedder="hash",
                         tavily_api_key="tvly-test", tavily_monthly_cap=0)
-    client = TestClient(create_app(settings=settings, generator=StubGenerator()))
+    client = local_client(create_app(settings=settings, generator=StubGenerator()))
     response = client.post("/ingest", json={"url": "https://x.example", "provider": "tavily"})
     assert response.status_code == 429
     assert stub_server.requests == []
@@ -174,7 +180,7 @@ def test_ingest_reports_removed_files(client, tmp_path):
 
 def test_web_search_without_a_key_degrades_with_a_warning(tmp_path, generator):
     settings = Settings(data_dir=tmp_path / "data", embedder="hash")  # no Tavily key
-    client = TestClient(create_app(settings=settings, generator=generator))
+    client = local_client(create_app(settings=settings, generator=generator))
     response = client.post("/search", json={"query": "anything", "web": True})
     assert response.status_code == 200
     assert any("TAVILY_API_KEY" in w for w in response.json()["warnings"])
@@ -183,7 +189,7 @@ def test_web_search_without_a_key_degrades_with_a_warning(tmp_path, generator):
 def test_web_failures_appear_in_warnings(stub_server, monkeypatch, settings, generator):
     monkeypatch.setattr(tavily, "BASE_URL", stub_server.url)
     stub_server.routes["/search"] = (500, {}, {"detail": {"error": "boom"}})
-    client = TestClient(create_app(settings=settings, generator=generator))
+    client = local_client(create_app(settings=settings, generator=generator))
     for path, key in (("/search", "query"), ("/ask", "question")):
         body = client.post(path, json={key: "anything", "web": True}).json()
         assert any("web search failed" in w for w in body["warnings"])
@@ -228,7 +234,7 @@ def test_url_ingests_share_one_polite_crawler(stub_server, settings, generator):
         stub_server.routes[f"/{name}"] = (
             200, html, f"<html><body><article><p>Page {name} text.</p></article></body></html>")
     fetcher = Fetcher(sleep=sleep, clock=lambda: clock[0])
-    client = TestClient(create_app(settings=settings, generator=generator, fetcher=fetcher))
+    client = local_client(create_app(settings=settings, generator=generator, fetcher=fetcher))
     for name in ("a", "b"):
         assert client.post("/ingest", json={"url": f"{stub_server.url}/{name}"}).status_code == 200
     assert stub_server.paths.count("/robots.txt") == 1  # cached across API calls
