@@ -60,7 +60,7 @@ def test_unknown_index_backend_is_rejected():
 def test_web_settings_have_safe_defaults_and_can_be_overridden():
     defaults = load_settings({})
     assert defaults.tavily_monthly_cap == 800
-    assert defaults.web_fallback_threshold == 0.5
+    assert defaults.web_fallback_threshold == 0.55
     custom = load_settings({"TAVILY_MONTHLY_CAP": "100", "WEB_FALLBACK_THRESHOLD": "0.3"})
     assert custom.tavily_monthly_cap == 100
     assert custom.web_fallback_threshold == 0.3
@@ -124,7 +124,7 @@ def test_empty_values_fall_back_to_defaults():
     settings = load_settings({"TAVILY_MONTHLY_CAP": "", "WEB_FALLBACK_THRESHOLD": "  ",
                               "EMBEDDER": "", "GEN_MODEL": ""})
     assert settings.tavily_monthly_cap == 800
-    assert settings.web_fallback_threshold == 0.5
+    assert settings.web_fallback_threshold == 0.55
     assert settings.embedder == "ollama"
     assert settings.gen_model == "llama3.2:3b"
 

@@ -41,7 +41,7 @@ def hybrid_search(
     k: int = 5,
     *,
     web: WebSearcher | None = None,
-    threshold: float = 0.5,
+    threshold: float = 0.55,
     persist: bool = False,
     warnings: list[str] | None = None,
 ) -> list[Hit]:

@@ -32,7 +32,7 @@ flowchart LR
     subgraph Query
         question["question"] --> retrieval["retrieval: local first"]
         index --> retrieval
-        retrieval -->|"best score < 0.5 and web on"| budget["budget guard: monthly cap"]
+        retrieval -->|"best score < 0.55 and web on"| budget["budget guard: monthly cap"]
         budget --> tavily_search["Tavily search"]
         tavily_search --> retrieval
         retrieval --> generator["generator: llama3.2:3b via Ollama"]
@@ -137,7 +137,7 @@ Output from the fixture corpus with `--embedder hash` (real embeddings give diff
    # Photosynthesis Photosynthesis is the process plants use to make glucose. Chlorophyll in the chloroplasts absorbs light energy, which converts carbon dioxid...
 ```
 
-Add `--web` to fall back to Tavily search when the best local score is below `WEB_FALLBACK_THRESHOLD` (default 0.5). ragsearch embeds the web snippets with the same model and ranks them together with your local chunks. Web results stay in memory unless you add `--save-web`, which never replaces a page you already ingested in full. A URL that is already in your local results isn't repeated from the web.
+Add `--web` to fall back to Tavily search when the best local score is below `WEB_FALLBACK_THRESHOLD` (default 0.55). ragsearch embeds the web snippets with the same model and ranks them together with your local chunks. Web results stay in memory unless you add `--save-web`, which never replaces a page you already ingested in full. A URL that is already in your local results isn't repeated from the web.
 
 ### Evaluate retrieval
 
@@ -145,14 +145,14 @@ Add `--web` to fall back to Tavily search when the best local score is below `WE
 python -m ragsearch eval tests/fixtures/labelled.json -k 3
 ```
 
-The labelled file is a JSON list of `{"question": ..., "expected_source": ...}`. A source matches when it ends with the expected name, so `stacks.md` matches a full path. On the six fixture questions, the offline hash embedder scores:
+The labelled file is a JSON list of `{"question": ..., "expected_source": ...}`. A source matches when it ends with the expected name, so `stacks.md` matches a full path. Measured on the six fixture questions:
 
-| k | recall@k | MRR@k |
-|---:|---:|---:|
-| 1 | 0.833 | 0.833 |
-| 3 | 1.000 | 0.917 |
+| Embedder | recall@1 | MRR@1 | recall@3 | MRR@3 |
+|---|---:|---:|---:|---:|
+| `nomic-embed-text` (Ollama) | 1.000 | 1.000 | 1.000 | 1.000 |
+| `hash` (offline, word matching) | 0.833 | 0.833 | 1.000 | 0.917 |
 
-These numbers come from `--embedder hash` on a four-document corpus. Nobody has measured `nomic-embed-text` on this set yet; run the same command without `--embedder hash` to do it.
+Six questions over four short notes is a smoke test, not a benchmark: write a labelled file for your own notes to measure what matters to you.
 
 ## HTTP API
 
@@ -188,7 +188,13 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/ask -ContentType applicatio
 }
 ```
 
-That JSON is illustrative: the shape is exact, but the answer text and scores depend on your model and documents. The prompt numbers each source, tells the model to answer only from them and to cite them, and to reply "I don't know based on the provided sources." when they don't contain the answer. With an empty index, `/ask` returns that reply without calling the model. ragsearch sizes Ollama's context window to the prompt (up to 16,384 tokens), so a large `k` never silently cuts off the instructions or the best sources.
+That JSON is illustrative: the shape is exact, but the answer text and scores depend on your model and documents. Real answers from `llama3.2:3b` over the fixture notes (each took 1 to 2.5 s on an RTX 4050 laptop):
+
+| Question | Answer | Cited |
+|---|---|---|
+| In what order does a stack remove items? | "...most recently added item is always removed first, which is a last in first out (LIFO) data structure." | [1] stacks.md |
+| How do central banks bring inflation down? | "...by raising interest rates, which reduces consumer demand." | [1] inflation.pdf |
+| What is the boiling point of mercury? | "I don't know based on the provided sources." | none | The prompt numbers each source, tells the model to answer only from them and to cite them, and to reply "I don't know based on the provided sources." when they don't contain the answer. With an empty index, `/ask` returns that reply without calling the model. ragsearch sizes Ollama's context window to the prompt (up to 16,384 tokens), so a large `k` never silently cuts off the instructions or the best sources.
 
 Errors map to HTTP codes: 503 when Ollama is unreachable, 422 for bad input, a missing path or an unfetchable page, and, for `/ingest` with `"provider": "tavily"`, 502 for Tavily errors and 429 when the credit budget would be exceeded. `/search` and `/ask` never fail because of the web fallback: if Tavily isn't configured, is down or the budget is spent, they return the local results and say why in `warnings`. If `DATA_DIR` was built with a different embedder, the server refuses to start and prints one line saying so.
 
@@ -208,7 +214,7 @@ Settings come from environment variables, or from a `.env` file in the folder yo
 | `INDEX_BACKEND` | `numpy` | `numpy` or `faiss`. |
 | `TAVILY_API_KEY` | unset | Needed only for `--provider tavily`, `--web` and `"web": true`. |
 | `TAVILY_MONTHLY_CAP` | `800` | ragsearch refuses any Tavily call that would take this month's usage past the cap. |
-| `WEB_FALLBACK_THRESHOLD` | `0.5` | Web search runs only when the best local score is below this. |
+| `WEB_FALLBACK_THRESHOLD` | `0.55` | Web search runs only when the best local score is below this. |
 
 The default cap of 800 leaves 200 of the 1,000 free credits as a safety margin. Costs follow Tavily's published prices: search 1 credit (basic) or 2 (advanced), extract 1 per 5 URLs, map 1 per 10 pages, crawl = map + extract. Before every call, ragsearch books the worst case for that call (for a crawl, the cost of `--max-pages` pages) under a lock file, then settles to what Tavily reports it charged (`include_usage`). A call that never reached Tavily gives its credits back; one that may have been charged (a timeout after sending) keeps them, so the counter never under-counts. Connection failures and 502/503/504 replies are retried twice with a short backoff, since Tavily doesn't charge for those.
 
@@ -233,7 +239,7 @@ python scripts/benchmark_index.py
 ## Limitations
 
 - **The hash embedder is not semantic.** It only matches shared words. With it, "which data structure is last in first out" ranks `queues.txt` above `stacks.md`, because the queues file repeats "first in first out" and "data structure". Use Ollama for real searches.
-- **Untested against real Ollama.** Ollama wasn't running on the build machine, so embeddings and answers have only run against local stub servers. Tavily search and extract, the `--web` fallback and the local crawler were checked against the real services on 2026-10-19 (3 credits). The 0.5 threshold is a starting point that nobody has tuned for `nomic-embed-text` scores.
+- **The 0.55 threshold comes from a small sample.** With `nomic-embed-text`, the best score for questions the notes answer was 0.61 to 0.81, and for unrelated questions 0.46 to 0.49, so 0.55 sits between them. That is 7 questions over 4 notes: check it against your own notes with `search`. Everything else has run against the real services: Ollama embeddings and answers, Tavily search and extract, the `--web` fallback and the local crawler.
 - **Exact search keeps everything in RAM.** The store holds every vector, the search index holds a normalised copy, and the chunk text stays loaded. Measured with 20,000 chunks of 200 words at 768 dimensions: 159 MB steady and 220 MB peak while loading and running the first search. Memory grows linearly, so 100,000 chunks need roughly 0.8 GB, peaking near 1.1 GB.
 - **PDFs need a text layer.** pypdf extracts embedded text only. Scanned PDFs give no text because there is no OCR.
 - **Text files must be UTF-8 or Windows-1252.** Other encodings are read as Windows-1252, and UTF-16 files are rejected with a message asking you to save them as UTF-8.

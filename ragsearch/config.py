@@ -32,7 +32,8 @@ class Settings:
     embedder: str = "ollama"
     index_backend: str = "numpy"
     tavily_monthly_cap: int = 800
-    web_fallback_threshold: float = 0.5
+    # Measured with nomic-embed-text: on-topic best scores 0.61-0.81, off-topic 0.46-0.49.
+    web_fallback_threshold: float = 0.55
     # repr=False keeps the key out of logs, tracebacks and print(settings).
     tavily_api_key: str | None = field(default=None, repr=False)
 
