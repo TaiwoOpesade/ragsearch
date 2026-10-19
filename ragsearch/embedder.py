@@ -80,7 +80,7 @@ class OllamaEmbedder:
     def __init__(
         self,
         model: str = "nomic-embed-text",
-        host: str = "http://localhost:11434",
+        host: str = "http://127.0.0.1:11434",
         timeout: float = 60,
         document_prefix: str = "",
         query_prefix: str = "",
@@ -155,7 +155,7 @@ def _error_detail(err: urllib.error.HTTPError) -> str:
 
 def make_embedder(
     kind: str,
-    host: str = "http://localhost:11434",
+    host: str = "http://127.0.0.1:11434",
     model: str = "nomic-embed-text",
     hash_dim: int = 512,
 ) -> HashEmbedder | OllamaEmbedder:

@@ -200,7 +200,7 @@ Settings come from environment variables, or from a `.env` file in the folder yo
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server. `127.0.0.1:11434` also works. |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server. `localhost` is rewritten to `127.0.0.1`: on Windows it tries IPv6 first and every request waited about 5 s (ingest 9.6 s vs 1.4 s, measured). |
 | `EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model. |
 | `GEN_MODEL` | `llama3.2:3b` | Ollama chat model for `/ask`. |
 | `EMBEDDER` | `ollama` | `ollama` or `hash`. The CLI's `--embedder` overrides it. |

@@ -62,7 +62,7 @@ class OllamaGenerator:
     def __init__(
         self,
         model: str = "llama3.2:3b",
-        host: str = "http://localhost:11434",
+        host: str = "http://127.0.0.1:11434",
         timeout: float = 120,
         num_ctx: int = 4096,
     ):

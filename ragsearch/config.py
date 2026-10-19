@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 T = TypeVar("T")
 
@@ -24,7 +25,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
-    ollama_host: str = "http://localhost:11434"
+    ollama_host: str = "http://127.0.0.1:11434"
     embed_model: str = "nomic-embed-text"
     gen_model: str = "llama3.2:3b"
     data_dir: Path = Path("data")
@@ -36,8 +37,19 @@ class Settings:
     tavily_api_key: str | None = field(default=None, repr=False)
 
 
-def _with_scheme(host: str) -> str:
-    return host if "://" in host else f"http://{host}"
+def _ollama_url(host: str) -> str:
+    """Add a scheme, and use 127.0.0.1 for localhost.
+
+    On Windows "localhost" resolves to IPv6 ``::1`` first. Ollama listens on IPv4
+    only, so every request waited ~5 s for that attempt to fail before falling back
+    (measured: ingest 9.6 s via localhost vs 1.4 s via 127.0.0.1).
+    """
+    url = host if "://" in host else f"http://{host}"
+    parts = urlsplit(url)
+    if (parts.hostname or "").lower() == "localhost":
+        port = f":{parts.port}" if parts.port else ""
+        url = urlunsplit(parts._replace(netloc=f"127.0.0.1{port}"))
+    return url
 
 
 def _decode_dotenv(raw: bytes, path: Path) -> str:
@@ -116,7 +128,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         env = {**read_dotenv(".env"), **os.environ}
     d = Settings()
     return Settings(
-        ollama_host=_with_scheme(_setting(env, "OLLAMA_HOST", d.ollama_host, str)),
+        ollama_host=_ollama_url(_setting(env, "OLLAMA_HOST", d.ollama_host, str)),
         embed_model=_setting(env, "EMBED_MODEL", d.embed_model, str),
         gen_model=_setting(env, "GEN_MODEL", d.gen_model, str),
         data_dir=_setting(env, "DATA_DIR", d.data_dir, Path),

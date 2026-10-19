@@ -7,7 +7,7 @@ from ragsearch.config import ConfigError, Settings, load_settings, read_dotenv
 
 def test_defaults_suit_small_local_models():
     settings = load_settings({})
-    assert settings.ollama_host == "http://localhost:11434"
+    assert settings.ollama_host == "http://127.0.0.1:11434"
     assert settings.embed_model == "nomic-embed-text"
     assert settings.gen_model == "llama3.2:3b"
     assert settings.data_dir == Path("data")
@@ -159,3 +159,16 @@ def test_unreadable_dotenv_is_a_config_error(tmp_path):
     path.write_bytes(b"KEY=\xff\xfe\xfa\x80 bad")
     with pytest.raises(ConfigError, match=".env"):
         read_dotenv(path)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("http://localhost:11434", "http://127.0.0.1:11434"),
+     ("localhost:11434", "http://127.0.0.1:11434"),
+     ("http://LOCALHOST:8080", "http://127.0.0.1:8080"),
+     ("http://gpu-box:11434", "http://gpu-box:11434")],
+)
+def test_localhost_is_rewritten_to_ipv4(value, expected):
+    # On Windows "localhost" tries IPv6 (::1) first; Ollama listens on IPv4 only,
+    # which cost ~5 s per request before falling back.
+    assert load_settings({"OLLAMA_HOST": value}).ollama_host == expected
