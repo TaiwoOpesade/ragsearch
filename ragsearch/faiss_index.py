@@ -1,8 +1,9 @@
 """FAISS-backed index: exact inner-product search on normalised vectors.
 
-``IndexFlatIP`` is still brute force, but FAISS uses optimised SIMD/BLAS
-kernels, so it is much faster than NumPy as the index grows. The file format
-is the same ``.npz`` as ``VectorIndex``, so saved indexes are interchangeable.
+``IndexFlatIP`` is exact brute force, like ``VectorIndex``. On this project's
+single-query benchmark (docs/benchmarks.md) it was not faster than NumPy; FAISS
+pays off for batches of queries or approximate indexes (IVF, HNSW). The file
+format is the same ``.npz`` as ``VectorIndex``, so saved indexes are interchangeable.
 """
 
 from pathlib import Path
