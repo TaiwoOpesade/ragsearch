@@ -107,10 +107,15 @@ def ingest(
 
 
 def _prune(store: Store, root: Path, seen: set[str]) -> list[str]:
-    """Remove indexed files under ``root`` that this ingest did not see."""
+    """Remove indexed files under ``root`` that this ingest did not see and that are gone.
+
+    Checking the disk too matters: a folder that could not be listed this time
+    (an offline share, a permission change) is skipped silently by the walk.
+    """
     base = root.resolve().as_posix()
     prefix = base.rstrip("/") + "/"
-    gone = [s for s in store.sources if s not in seen and (s == base or s.startswith(prefix))]
+    gone = [s for s in store.sources
+            if s not in seen and (s == base or s.startswith(prefix)) and not Path(s).exists()]
     for source in gone:
         store.remove(source)
     return gone

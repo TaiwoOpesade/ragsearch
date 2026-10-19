@@ -202,3 +202,21 @@ def test_pruning_never_touches_other_folders_web_pages_or_failed_files(tmp_path)
 
     assert report.removed == []
     assert len(store.sources) == 3  # the archive file, the web page and the failed PDF
+
+
+def test_files_that_still_exist_are_never_pruned(tmp_path):
+    # Path.rglob silently skips folders it cannot list (offline share, permissions),
+    # so "not seen this time" must not mean "deleted".
+    notes = tmp_path / "notes"
+    (notes / "sub").mkdir(parents=True)
+    write(notes, "a.md", "alpha")
+    write(notes / "sub", "b.md", "beta")
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    only_top = [d for d in load_documents(notes) if not d.source.endswith("b.md")]
+    report = ingest(only_top, emb, store, prune_under=notes)
+
+    assert report.removed == []
+    assert len(store.sources) == 2
