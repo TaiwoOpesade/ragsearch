@@ -286,10 +286,23 @@ def test_timeout_after_sending_keeps_the_worst_case_counted(stub_server, budget)
     assert len(stub_server.requests) == 1  # never retried: that could double-charge
 
 
-def test_crawl_gets_a_longer_timeout_than_search():
+def test_crawl_gets_a_longer_timeout_than_search(stub_server, budget, monkeypatch):
+    import time
+
     from ragsearch.web.tavily import CRAWL_TIMEOUT
 
     assert CRAWL_TIMEOUT >= 150  # Tavily's own crawl timeout defaults to 150 s
+
+    def slow_crawl(request):
+        time.sleep(0.5)  # longer than the client's 0.2 s timeout
+        return 200, {}, {"results": [{"url": "https://docs.example/1", "raw_content": "text"}]}
+
+    monkeypatch.setattr("ragsearch.web.tavily.CRAWL_TIMEOUT", 2.0)  # a quick stand-in
+    stub_server.routes["/crawl"] = slow_crawl
+    client = TavilyClient(api_key=KEY, budget=budget, base_url=stub_server.url, timeout=0.2,
+                          sleep=RecordingSleep())
+    pages = client.crawl("https://docs.example", max_pages=5)
+    assert [p.url for p in pages] == ["https://docs.example/1"]
 
 
 def test_crawl_rejects_a_non_positive_page_limit(client):
