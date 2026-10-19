@@ -8,20 +8,17 @@ Rules it always follows:
 * waits at least one second between the end of one response and the next request.
 """
 
-import codecs
 import logging
-import re
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from html.parser import HTMLParser
-from typing import NamedTuple
-from urllib.parse import urldefrag, urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import requests
 import trafilatura
 
+from ragsearch.web import pages
 from ragsearch.web.robots import RobotsRules
 
 log = logging.getLogger(__name__)
@@ -33,17 +30,6 @@ MAX_ROBOTS_REDIRECTS = 5  # RFC 9309 asks crawlers to follow at least five
 ROBOTS_TTL = 24 * 3600.0  # RFC 9309: do not use a cached robots.txt for over 24 h
 ROBOTS_ERROR_TTL = 300.0  # a "don't crawl" caused by an error is retried sooner
 
-_CHARSET = re.compile(r"charset=[\"']?([\w.:-]+)", re.IGNORECASE)
-
-
-def _decode(body: bytes, charset: str) -> str:
-    """Decode with ``charset``, falling back to UTF-8 if that codec cannot decode."""
-    try:
-        return body.decode(charset, errors="replace")
-    except (LookupError, UnicodeError):  # e.g. charset=undefined
-        return body.decode("utf-8", errors="replace")
-
-
 class FetchError(RuntimeError):
     """Raised when a page cannot be fetched or has no readable text."""
 
@@ -52,50 +38,6 @@ class FetchError(RuntimeError):
 class Page:
     url: str
     text: str
-
-
-class _Response(NamedTuple):
-    status: int
-    content_type: str
-    body: bytes
-    location: str | None
-
-    def charset(self) -> str | None:
-        """The declared text encoding, or None (also for bytes codecs like base64)."""
-        match = _CHARSET.search(self.content_type)
-        if not match:
-            return None
-        try:
-            info = codecs.lookup(match.group(1))
-        except LookupError:
-            return None
-        return info.name if getattr(info, "_is_text_encoding", True) else None
-
-
-class _LinkParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.links: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        href = dict(attrs).get("href")
-        if tag == "a" and href:
-            self.links.append(href)
-
-
-def _host(url: str) -> str:
-    return urlsplit(url).netloc.lower()
-
-
-def _resolve(base: str, link: str) -> str | None:
-    """Absolute, fragment-free http(s) URL for ``link``, or None if it is unusable."""
-    try:
-        target = urldefrag(urljoin(base, link.strip())).url
-        scheme = urlsplit(target).scheme
-    except ValueError:  # e.g. an unbalanced IPv6 bracket: "http://[oops"
-        log.info("Skipping malformed link %r on %s", link, base)
-        return None
-    return target if scheme in ("http", "https") else None
 
 
 class Fetcher:
@@ -125,8 +67,8 @@ class Fetcher:
 
     def crawl(self, start_url: str, max_pages: int = 30, max_depth: int = 2) -> Iterator[Page]:
         """Breadth-first crawl of ``start_url``'s host, yielding pages with text."""
-        host = _host(start_url)
-        start = _resolve(start_url, start_url)
+        host = pages.host(start_url)
+        start = pages.resolve(start_url, start_url)
         if start is None:
             raise FetchError(f"Not an http(s) URL: {start_url!r}")
         queue, seen, requests_made = deque([(start, 0)]), {start}, 0
@@ -152,19 +94,19 @@ class Fetcher:
             else:
                 charset = response.charset()
                 # With no usable charset, give trafilatura the bytes so it can detect it.
-                html = _decode(response.body, charset) if charset else None
+                html = pages.decode(response.body, charset) if charset else None
                 text = trafilatura.extract(html if html is not None else response.body, url=url)
                 if text:
                     yield Page(url=url, text=text)
                 if depth < max_depth:
-                    source = html if html is not None else _decode(response.body, "utf-8")
-                    links = [(link, depth + 1) for link in _links(source, url)]
+                    source = html if html is not None else pages.decode(response.body, "utf-8")
+                    links = [(link, depth + 1) for link in pages.links(source, url)]
 
             for link, link_depth in links:
-                target = _resolve(url, link)
+                target = pages.resolve(url, link)
                 if target is None or target in seen:
                     continue
-                if _host(target) != host:
+                if pages.host(target) != host:
                     log.info("Not following %s: different host", target)
                     continue
                 seen.add(target)
@@ -188,7 +130,7 @@ class Fetcher:
             except FetchError:
                 return RobotsRules.disallow_all(), ROBOTS_ERROR_TTL  # unsure: don't crawl
             if response.location:
-                target = _resolve(url, response.location)
+                target = pages.resolve(url, response.location)
                 if target is None:
                     return RobotsRules.allow_all(), ROBOTS_TTL
                 url = target
@@ -196,7 +138,7 @@ class Fetcher:
             status = response.status
             if status == 200:
                 charset = response.charset() or "utf-8"
-                body = _decode(response.body, "utf-8-sig" if charset == "utf-8" else charset)
+                body = pages.decode(response.body, "utf-8-sig" if charset == "utf-8" else charset)
                 return RobotsRules.parse(body, USER_AGENT), ROBOTS_TTL
             if status in (401, 403, 429) or status >= 500:
                 return RobotsRules.disallow_all(), ROBOTS_ERROR_TTL  # forbidden or erroring
@@ -210,7 +152,7 @@ class Fetcher:
             if remaining > 0:
                 self._sleep(remaining)
 
-    def _get(self, url: str) -> _Response:
+    def _get(self, url: str) -> pages.Response:
         self._wait_politely()
         try:
             with self._session.get(
@@ -223,19 +165,10 @@ class Fetcher:
                     if len(body) > self._max_bytes:
                         raise FetchError(f"response larger than {self._max_bytes} bytes")
                 location = r.headers.get("Location") if r.is_redirect else None
-                return _Response(r.status_code, r.headers.get("Content-Type", ""),
+                return pages.Response(r.status_code, r.headers.get("Content-Type", ""),
                                  bytes(body), location)
         except (requests.RequestException, ValueError) as err:  # ValueError: unparseable URL
             raise FetchError(f"request failed: {err}") from err
         finally:
             # Measure the gap from when this response finished, not when it started.
             self._last_request = self._clock()
-
-
-def _links(html: str, url: str) -> list[str]:
-    parser = _LinkParser()
-    try:
-        parser.feed(html)
-    except (AssertionError, ValueError) as err:  # older HTMLParser releases, odd markup
-        log.info("Stopped reading links on %s: %s", url, err)
-    return parser.links

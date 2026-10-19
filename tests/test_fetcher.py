@@ -248,12 +248,12 @@ def test_robots_redirect_to_an_unparseable_host_does_not_crash(stub_server, fake
 
 def test_a_page_that_breaks_the_html_parser_does_not_stop_the_crawl(stub_server, fake_time,
                                                                      monkeypatch):
-    from ragsearch.web import fetcher as fetcher_module
+    from ragsearch.web import pages
 
     def broken_feed(self, data):
         raise AssertionError("unknown status keyword 'foo' in marked section")
 
-    monkeypatch.setattr(fetcher_module._LinkParser, "feed", broken_feed)
+    monkeypatch.setattr(pages.LinkParser, "feed", broken_feed)
     stub_server.routes["/"] = (200, HTML, page("Home", "Readable home page text.", ["/next"]))
     pages = list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
     assert [p.url.removeprefix(stub_server.url) for p in pages] == ["/"]
