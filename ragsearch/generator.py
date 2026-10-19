@@ -48,14 +48,22 @@ def cited_numbers(answer: str, n_sources: int) -> list[int]:
 # Context sizing. Ollama silently drops the *start* of a prompt that is longer than
 # num_ctx, which would lose the grounding rules and the best sources, so the
 # context is sized to the prompt instead.
-CHARS_PER_TOKEN = 3  # conservative: English averages ~4; paths and URLs fewer
+ASCII_CHARS_PER_TOKEN = 3  # conservative: English averages ~4; paths and URLs fewer
 REPLY_TOKENS = 1024  # room left for the answer
 MAX_CONTEXT = 16384  # a 3B model's KV cache at this size is ~1.8 GB: fits 6 GB VRAM
 
 
 def _tokens_needed(messages: list[dict]) -> int:
-    chars = sum(len(m["content"]) for m in messages)
-    return chars // CHARS_PER_TOKEN + 16 * len(messages) + REPLY_TOKENS
+    """A high estimate of the prompt's tokens, plus room for the reply.
+
+    Every non-ASCII character counts as a whole token: Chinese, Japanese and Korean
+    run at about one token per character, so 3 characters per token would undercount
+    them about threefold.
+    """
+    text = "".join(m["content"] for m in messages)
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    non_ascii = len(text) - ascii_chars
+    return ascii_chars // ASCII_CHARS_PER_TOKEN + non_ascii + 16 * len(messages) + REPLY_TOKENS
 
 
 class OllamaGenerator:

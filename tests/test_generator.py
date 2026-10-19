@@ -3,6 +3,7 @@ import pytest
 from ragsearch.generator import (
     MAX_CONTEXT,
     NO_ANSWER,
+    REPLY_TOKENS,
     SYSTEM_PROMPT,
     GenerationError,
     OllamaGenerator,
@@ -111,6 +112,20 @@ def test_sources_that_cannot_fit_are_dropped_from_the_end(stub_server):
     assert "[1] (notes/0.md)" in user  # the best sources and the rules always survive
     assert "[60]" not in user
     assert body["messages"][0]["content"] == SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("n_sources", [5, 20])
+def test_cjk_sources_get_a_context_big_enough_for_their_characters(stub_server, n_sources):
+    # Chinese, Japanese and Korean run at about one token per character and have no
+    # spaces, so one 200-word chunk can hold thousands of characters.
+    stub_server.routes["/api/chat"] = chat_ok
+    chunk = "栈是后进先出的数据结构。" * 160  # "A stack is a LIFO data structure.", 1,920 chars
+    hits = [Hit(1.0 - i / 100, f"notes/{i}.md", chunk, "local") for i in range(n_sources)]
+    OllamaGenerator(host=stub_server.url).generate("栈是什么？", hits)  # "What is a stack?"
+    body = stub_server.requests[0]["json"]
+    cjk_chars = sum(not c.isascii() for m in body["messages"] for c in m["content"])
+    assert body["options"]["num_ctx"] >= cjk_chars + REPLY_TOKENS  # weaker sources dropped
+    assert "[1] (notes/0.md)" in body["messages"][-1]["content"]
 
 
 def test_unreadable_reply_is_a_generation_error(stub_server):
