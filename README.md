@@ -10,6 +10,10 @@ Everything runs on your machine with [Ollama](https://ollama.com). The defaults 
 
 The project was built in five stages, each tagged in git (`stage-1` to `stage-5`). From stage 2 on, every behaviour got a failing test before its code.
 
+![The ragsearch web interface answering a question from the sample notes, with the cited source highlighted](docs/ui.png)
+
+*A real answer from `llama3.2:3b` over the sample notes in `tests/fixtures`, in the browser interface.*
+
 ## Architecture
 
 ```mermaid
@@ -43,6 +47,7 @@ flowchart LR
     cli -.-> retrieval
     api["FastAPI: /ingest /search /ask"] -.-> pipeline
     api -.-> retrieval
+    browser["Browser interface at /"] -.-> api
 ```
 
 | Module | Job |
@@ -51,15 +56,16 @@ flowchart LR
 | `embedder.py` | `OllamaEmbedder` (real embeddings, with `nomic-embed-text`'s `search_document:` / `search_query:` prefixes) and `HashEmbedder` (offline, for tests). |
 | `index.py`, `faiss_index.py` | The `Index` protocol, a NumPy brute-force index and a FAISS `IndexFlatIP` index. |
 | `loaders.py` | Finds `.md`, `.txt` and `.pdf` files and reads them in bounded segments (UTF-8, or Windows-1252 with a warning). |
-| `store.py` | Saves vectors, chunk text and a content hash per source in one atomic `data/index.npz`; merges saves from other processes. |
+| `store.py`, `indexfile.py` | Keeps vectors, chunk text and a content hash per source, saved in one atomic `data/index.npz`; merges saves from other processes. |
 | `pipeline.py` | Ingests documents: skips unchanged sources, replaces changed ones, removes deleted files, embeds in batches. |
 | `retrieval.py` | Hybrid search: local index first, Tavily only when local results are weak. |
 | `generator.py` | Builds the grounded prompt and calls Ollama's `/api/chat`. |
 | `eval.py` | recall@k and MRR over a labelled question set. |
-| `web/fetcher.py`, `web/robots.py` | Free crawler using requests and trafilatura, with an RFC 9309 robots.txt matcher. |
+| `web/fetcher.py`, `web/pages.py`, `web/robots.py` | Free crawler using requests and trafilatura, with an RFC 9309 robots.txt matcher. |
 | `web/tavily.py`, `web/budget.py` | Tavily REST client and the monthly credit guard (locked, so the CLI and API can share it). |
-| `fileutil.py` | Atomic writes and a cross-process lock file, with no extra dependencies. |
+| `fileutil.py` | Atomic writes and cross-process locks using the operating system's file locks. |
 | `cli.py`, `api.py`, `schemas.py` | Command line and HTTP front ends. |
+| `ui/` | The browser interface: one HTML page, its CSS and its JavaScript, with no build step. |
 
 ## Setup
 
@@ -93,6 +99,16 @@ You need Python 3.10 or newer.
    ```
 
 To try everything without Ollama, add `--embedder hash` to any command (or set `EMBEDDER=hash`). The hash embedder matches shared words rather than meaning, so use it for testing only.
+
+## Web interface
+
+```bash
+uvicorn --factory ragsearch.api:create_app
+```
+
+Then open http://127.0.0.1:8000. Ask a question and click a citation to jump to its source, switch to plain search, or use **Add documents** to index a folder or a web page. The status bar shows how many chunks are indexed and how many Tavily credits you have used this month. Web search stays off until you tick it, and the page says what each web search costs.
+
+The page is three static files in `ragsearch/ui`, with no build step, CDN or web fonts, so it works offline. It never inserts document or web text as HTML, and the server sends a strict Content-Security-Policy. It follows your system's light or dark setting and works at phone width.
 
 ## Command line
 
@@ -160,11 +176,11 @@ Six questions over four short notes is a smoke test, not a benchmark: write a la
 uvicorn --factory ragsearch.api:create_app
 ```
 
-The server listens on `http://127.0.0.1:8000`. FastAPI also serves interactive docs at `/docs`.
+The server listens on `http://127.0.0.1:8000` and serves the web interface at `/`. It only answers requests addressed to `127.0.0.1` or `localhost` (see `ALLOWED_HOSTS`), which stops a malicious website from reaching it through DNS rebinding. FastAPI also serves interactive docs at `/docs`.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/health` | none | `status`, `chunks`, `embedder`, `index_backend` |
+| GET | `/health` | none | `status`, `chunks`, `embedder`, `index_backend`, `web_configured`, `web_credits_used`, `web_credits_cap` |
 | POST | `/ingest` | `{"path": "./notes"}` or `{"url": "https://...", "crawl": true, "max_pages": 30, "max_depth": 2, "provider": "local"}` | `added`, `updated`, `skipped`, `failed`, `removed`, `total_chunks` |
 | POST | `/search` | `{"query": "...", "k": 5, "web": false, "save_web": false}` | `results[]` with `score`, `source`, `text`, `origin`; `warnings[]` |
 | POST | `/ask` | `{"question": "...", "k": 5, "web": false}` | `answer`, `citations[]` (`number`, `source`, `origin`), `results[]`, `warnings[]` |
@@ -198,7 +214,7 @@ That JSON is illustrative: the shape is exact, but the answer text and scores de
 
 Errors map to HTTP codes: 503 when Ollama is unreachable, 422 for bad input, a missing path or an unfetchable page, and, for `/ingest` with `"provider": "tavily"`, 502 for Tavily errors and 429 when the credit budget would be exceeded. `/search` and `/ask` never fail because of the web fallback: if Tavily isn't configured, is down or the budget is spent, they return the local results and say why in `warnings`. If `DATA_DIR` was built with a different embedder, the server refuses to start and prints one line saying so.
 
-The API and the CLI can work on the same data directory at once: saves take a lock file and merge with each other, and the server reloads the index before each request.
+The API and the CLI can work on the same data directory at once. Reads and saves take the folder's lock (an operating-system file lock, which is released automatically if a process crashes), saves merge with each other, and the server reloads the index before each request.
 
 ## Configuration
 
@@ -215,8 +231,9 @@ Settings come from environment variables, or from a `.env` file in the folder yo
 | `TAVILY_API_KEY` | unset | Needed only for `--provider tavily`, `--web` and `"web": true`. |
 | `TAVILY_MONTHLY_CAP` | `800` | ragsearch refuses any Tavily call that would take this month's usage past the cap. |
 | `WEB_FALLBACK_THRESHOLD` | `0.55` | Web search runs only when the best local score is below this. |
+| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host names the API answers to. Add your computer's network address to use it from another device. |
 
-The default cap of 800 leaves 200 of the 1,000 free credits as a safety margin. Costs follow Tavily's published prices: search 1 credit (basic) or 2 (advanced), extract 1 per 5 URLs, map 1 per 10 pages, crawl = map + extract. Before every call, ragsearch books the worst case for that call (for a crawl, the cost of `--max-pages` pages) under a lock file, then settles to what Tavily reports it charged (`include_usage`). A call that never reached Tavily gives its credits back; one that may have been charged (a timeout after sending) keeps them, so the counter never under-counts. Connection failures and 502/503/504 replies are retried twice with a short backoff, since Tavily doesn't charge for those.
+The default cap of 800 leaves 200 of the 1,000 free credits as a safety margin. Costs follow Tavily's published prices: search 1 credit (basic) or 2 (advanced), extract 1 per 5 URLs, map 1 per 10 pages, crawl = map + extract. Before every call, ragsearch books the worst case for that call (for a crawl, the cost of `--max-pages` pages) under a lock file, then settles to what Tavily reports it charged (`include_usage`). A call that never reached Tavily gives its credits back; one that may have been charged (a timeout after sending) keeps them, so the counter never under-counts. Connection failures and 503 replies are retried twice with a short backoff, since neither can have been charged. A 502 or 504 from Tavily's gateway may still have been charged, so it keeps its credits counted and is never resent.
 
 ## Benchmark: NumPy vs FAISS
 
@@ -243,17 +260,17 @@ python scripts/benchmark_index.py
 - **Exact search keeps everything in RAM.** The store holds every vector, the search index holds a normalised copy, and the chunk text stays loaded. Measured with 20,000 chunks of 200 words at 768 dimensions: 159 MB steady and 220 MB peak while loading and running the first search. Memory grows linearly, so 100,000 chunks need roughly 0.8 GB, peaking near 1.1 GB.
 - **PDFs need a text layer.** pypdf extracts embedded text only. Scanned PDFs give no text because there is no OCR.
 - **Text files must be UTF-8 or Windows-1252.** Other encodings are read as Windows-1252, and UTF-16 files are rejected with a message asking you to save them as UTF-8.
-- **The crawler reads static HTML only.** It doesn't run JavaScript or read sitemaps, and it treats `www.example.com` and `example.com` as different hosts. It is stricter than RFC 9309 in one place: a robots.txt answered with 401 or 403 means "don't crawl".
+- **The crawler reads static HTML only.** It doesn't run JavaScript or read sitemaps, and it treats `www.example.com` and `example.com` as different hosts. It is stricter than RFC 9309 in one place: a robots.txt answered with 401, 403 or 429 means "don't crawl" (re-checked after 5 minutes).
 - **The credit counter only sees this install.** It doesn't know about credits you spent from another machine or the Tavily dashboard.
 - **Citations are not fact-checked.** The API reports which sources the model cited. A 3B model can still cite the wrong source or add claims the source doesn't make.
-- **The API has no authentication.** Keep it on `127.0.0.1`. `POST /ingest` with a `path` reads any file the server process can read.
+- **The API has no authentication.** It only answers requests addressed to `127.0.0.1` or `localhost`, which blocks websites, but any program on this computer can call it, and `POST /ingest` with a `path` reads any file the server process can read.
 - **Changing the embedding model needs a new data directory.** ragsearch refuses to mix vectors from different embedders and tells you so.
 - **Two processes ingesting the same file at the same moment.** Saves merge, but if both change the same source, the one that saves last wins for that source.
 
 ## Development
 
 ```bash
-python -m pytest -W error     # 395 pass, 4 live tests skip; no Ollama, internet or API key needed
+python -m pytest -W error     # 461 pass, 5 skip (4 live, 1 Linux-only); no Ollama, internet or API key needed
 ruff check .
 ```
 
@@ -268,6 +285,7 @@ One warning is silenced on purpose: Starlette 1.9 asks for a new `httpx2` packag
 ```text
 ragsearch/        package (CLI, API, pipeline, indexes, web clients)
 ragsearch/web/    Tavily client, credit budget, crawler, robots.txt matcher
+ragsearch/ui/     browser interface (HTML, CSS, JavaScript)
 tests/            pytest suite; tests/fixtures holds the sample corpus and labelled.json
 scripts/          benchmark_index.py
 docs/             benchmarks.md (generated)
