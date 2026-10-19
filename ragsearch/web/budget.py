@@ -7,6 +7,7 @@ crawl = map + extract. The default cap of 800 leaves a safety margin.
 
 import json
 import math
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date
@@ -73,13 +74,28 @@ class CreditBudget:
         if not self.path.exists():
             return 0
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self._read())
             return int(data["credits"]) if data["month"] == self._month() else 0
         except (ValueError, KeyError, TypeError) as err:
             # Never silently reset to zero: that could overspend real credits.
             raise BudgetExceeded(
                 f"Tavily usage file {self.path} is unreadable ({err}); fix or delete it"
             ) from err
+
+    def _read(self) -> str:
+        """Read the usage file, retrying briefly: on Windows a reader can get 'access
+        denied' for a moment while another process swaps the file in."""
+        for attempt in range(20):
+            try:
+                return self.path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return '{"month": "", "credits": 0}'
+            except PermissionError as err:
+                if attempt == 19:
+                    raise BudgetExceeded(
+                        f"Tavily usage file {self.path} could not be read ({err})") from err
+                time.sleep(0.05)
+        raise AssertionError("unreachable")
 
     @property
     def remaining(self) -> int:

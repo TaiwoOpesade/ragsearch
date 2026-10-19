@@ -145,7 +145,41 @@ def test_usage_file_is_written_atomically_with_no_leftovers(tmp_path):
     b = budget(tmp_path)
     b.record(1)
     b.reserve(2)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["tavily_usage.json"]
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["tavily_usage.json", "tavily_usage.json.lock"]  # the lock file stays
+
+
+def test_a_momentarily_busy_usage_file_is_read_again(tmp_path, monkeypatch):
+    # On Windows a reader can briefly get "access denied" while a save swaps the file.
+    from ragsearch.web import budget as budget_module
+
+    b = budget(tmp_path)
+    b.record(3)
+    real_read = budget_module.Path.read_text
+    calls = []
+
+    def busy_once(self, *args, **kwargs):
+        calls.append(self)
+        if len(calls) == 1:
+            raise PermissionError(13, "file in use")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(budget_module.Path, "read_text", busy_once)
+    assert b.used == 3
+
+
+def test_a_usage_file_that_stays_unreadable_refuses_calls(tmp_path, monkeypatch):
+    from ragsearch.web import budget as budget_module
+
+    b = budget(tmp_path)
+    b.record(3)
+
+    def always_busy(self, *args, **kwargs):
+        raise PermissionError(13, "file in use")
+
+    monkeypatch.setattr(budget_module.Path, "read_text", always_busy)
+    with pytest.raises(BudgetExceeded, match="could not be read"):
+        b.ensure_available(1)
 
 
 def test_a_budget_locked_by_another_process_refuses_cleanly(tmp_path):
