@@ -1,5 +1,7 @@
 # ragsearch
 
+[![CI](https://github.com/TaiwoOpesade/ragsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/TaiwoOpesade/ragsearch/actions/workflows/ci.yml)
+
 A free, local-first semantic search and question-answering (RAG) system, written from scratch in Python.
 
 You point it at your notes, PDFs or web pages. It splits them into chunks, turns each chunk into a vector with a local embedding model, and stores the vectors on disk. You can then search by meaning, or ask a question and get an answer from a local LLM that cites its sources as [1], [2]. When your own documents don't cover a question, it can fall back to a live web search through Tavily's free plan, and it labels every result `local` or `web`.
