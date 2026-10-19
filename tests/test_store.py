@@ -166,7 +166,8 @@ def test_non_ascii_text_round_trips(tmp_path):
 
 def test_save_leaves_no_temporary_files(tmp_path):
     saved(tmp_path, "a.md")
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["index.npz", "manifest.json"]
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == [".lock", "index.npz", "manifest.json"]  # the lock file stays by design
 
 
 def test_two_stores_on_one_data_dir_do_not_lose_each_others_sources(tmp_path):
@@ -199,3 +200,88 @@ def test_refresh_picks_up_another_process_save(tmp_path):
     api.refresh()
     assert "late.md" in api.sources
     assert api.search(vecs([1, 0, 0])[0], k=1)[0].item["source"] == "late.md"
+
+
+# --- concurrency and error reporting (second review) --------------------------------
+
+
+def save_another(tmp_path, source):
+    other = Store(tmp_path, embedder_name="hash-3")
+    other.replace(source, "h", vecs([0, 0, 1]), items(source, 1))
+    other.save()
+
+
+def test_a_save_during_a_load_is_never_missed(tmp_path, monkeypatch):
+    import threading
+
+    from ragsearch import store as store_module
+
+    saved(tmp_path, "first.md")
+    real_load = store_module.np.load
+    writer: list[threading.Thread] = []
+
+    def slow_load(*args, **kwargs):
+        data = real_load(*args, **kwargs)
+        if not writer:  # first load only: another process saves while we read
+            writer.append(threading.Thread(target=save_another, args=(tmp_path, "second.md")))
+            writer[0].start()
+            writer[0].join(timeout=1.0)
+        return data
+
+    monkeypatch.setattr(store_module.np, "load", slow_load)
+    reader = Store(tmp_path, embedder_name="hash-3")
+    monkeypatch.undo()
+    writer[0].join(timeout=10)
+    reader.refresh()
+    assert "second.md" in reader.sources
+
+
+def test_save_waits_for_a_reader_that_has_the_index_open(tmp_path):
+    import threading
+
+    saved(tmp_path, "a.md")
+    handle = open(tmp_path / "index.npz", "rb")  # noqa: SIM115 - held open on purpose
+    threading.Timer(0.3, handle.close).start()  # on Windows os.replace fails until then
+    save_another(tmp_path, "b.md")
+    assert set(Store(tmp_path, embedder_name="hash-3").sources) == {"a.md", "b.md"}
+
+
+def test_unreadable_index_is_not_called_damaged(tmp_path, monkeypatch):
+    from ragsearch import store as store_module
+
+    saved(tmp_path, "a.md")
+
+    def denied(path):
+        raise PermissionError(13, "Access is denied", str(path))
+
+    monkeypatch.setattr(store_module, "_read_bytes", denied)
+    with pytest.raises(StoreError) as exc:
+        Store(tmp_path, embedder_name="hash-3")
+    assert "could not be read" in str(exc.value)
+    assert "Delete" not in str(exc.value)
+
+
+def test_a_failed_save_is_a_store_error(tmp_path, monkeypatch):
+    from ragsearch import store as store_module
+
+    def denied(path, data, **kwargs):
+        raise PermissionError(13, "Access is denied", str(path))
+
+    store = Store(tmp_path, embedder_name="hash-3")
+    store.replace("a.md", "h", vecs([1, 0, 0]), items("a.md", 1))
+    monkeypatch.setattr(store_module, "atomic_write_bytes", denied)
+    with pytest.raises(StoreError, match="could not be saved"):
+        store.save()
+
+
+def test_source_names_with_lone_surrogates_still_save(tmp_path):
+    name = "caf\udce9.md"  # an undecodable file name, as Linux reports it
+    store = Store(tmp_path, embedder_name="hash-3")
+    store.replace(name, "h", vecs([1, 0, 0]), items(name, 1))
+    store.save()
+    assert name in Store(tmp_path, embedder_name="hash-3").sources
+
+
+def test_reading_a_fresh_data_dir_creates_nothing(tmp_path):
+    Store(tmp_path / "new", embedder_name="hash-3")
+    assert not (tmp_path / "new").exists()

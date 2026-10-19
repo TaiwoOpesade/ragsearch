@@ -63,14 +63,15 @@ def check_query(dim: int, query: np.ndarray, k: int) -> np.ndarray:
 
 def encode_json(value: object) -> np.ndarray:
     """JSON as a UTF-8 byte array: about 4x smaller than a NumPy unicode string."""
-    data = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    # surrogatepass: an undecodable file name must not stop the whole index saving.
+    data = json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass")
     return np.frombuffer(data, dtype=np.uint8)
 
 
 def decode_json(array: np.ndarray) -> object:
     if array.dtype.kind == "U":  # files written before the UTF-8 format
         return json.loads(array.item())
-    return json.loads(array.tobytes().decode("utf-8"))
+    return json.loads(array.tobytes().decode("utf-8", "surrogatepass"))
 
 
 def npz_bytes(**arrays: np.ndarray) -> bytes:
