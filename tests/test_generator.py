@@ -100,7 +100,16 @@ def test_context_grows_so_twenty_sources_are_not_truncated(stub_server):
     num_ctx = body["options"]["num_ctx"]
     assert num_ctx > 4096
     assert num_ctx * 3 >= prompt_chars  # room for the whole prompt at ~3 chars/token
-    assert num_ctx % 1024 == 0
+    assert num_ctx in (4096, 8192, 16384)
+
+
+@pytest.mark.parametrize("n_sources", [1, 5, 10, 15, 20, 60])
+def test_num_ctx_is_always_one_of_three_fixed_sizes(stub_server, n_sources):
+    # Ollama reloads the model whenever num_ctx changes, so it must not follow every
+    # small change in prompt length from one question to the next.
+    stub_server.routes["/api/chat"] = chat_ok
+    OllamaGenerator(host=stub_server.url).generate("q", many_hits(n_sources, 1300))
+    assert stub_server.requests[0]["json"]["options"]["num_ctx"] in (4096, 8192, 16384)
 
 
 def test_sources_that_cannot_fit_are_dropped_from_the_end(stub_server):

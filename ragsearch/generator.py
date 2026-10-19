@@ -51,6 +51,7 @@ def cited_numbers(answer: str, n_sources: int) -> list[int]:
 ASCII_CHARS_PER_TOKEN = 3  # conservative: English averages ~4; paths and URLs fewer
 REPLY_TOKENS = 1024  # room left for the answer
 MAX_CONTEXT = 16384  # a 3B model's KV cache at this size is ~1.8 GB: fits 6 GB VRAM
+CONTEXT_BUCKETS = (4096, 8192, MAX_CONTEXT)
 
 
 def _tokens_needed(messages: list[dict]) -> int:
@@ -85,8 +86,11 @@ class OllamaGenerator:
         while len(sources) > 1 and _tokens_needed(messages) > MAX_CONTEXT:
             sources = sources[:-1]
             messages = build_messages(question, sources)
-        needed = -(-_tokens_needed(messages) // 1024) * 1024  # round up to 1024
-        return messages, min(MAX_CONTEXT, max(self.num_ctx, needed))
+        # Ollama reloads the model whenever num_ctx changes, so use a few fixed sizes
+        # rather than following every small change in prompt length.
+        needed = _tokens_needed(messages)
+        size = next((b for b in CONTEXT_BUCKETS if b >= max(needed, self.num_ctx)), MAX_CONTEXT)
+        return messages, size
 
     def generate(self, question: str, sources: list[Hit]) -> str:
         messages, num_ctx = self._fit(question, sources)
