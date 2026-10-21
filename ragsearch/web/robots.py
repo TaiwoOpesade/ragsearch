@@ -19,15 +19,19 @@ import string
 from dataclasses import dataclass
 
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+# Characters a URL may carry unencoded: unreserved plus RFC 3986's reserved set.
+_SAFE = _UNRESERVED | frozenset(":/?#[]@!&'()+,;=")
 _HEX = frozenset(string.hexdigits)
 
 
 def _canonical(text: str, literal_specials: bool) -> str:
     """Percent-encode ``text`` the one canonical way (RFC 3986 normalisation).
 
-    Escapes of unreserved characters are decoded, other escapes get upper-case hex,
-    and non-ASCII characters are encoded as UTF-8. In a URL path (``literal_specials``)
-    a raw ``*`` or ``$`` is data, so it is encoded to match how a rule must write it.
+    This matches what ``requests`` actually sends: escapes of unreserved characters
+    are decoded, other escapes get upper-case hex, and everything else outside the
+    safe set (spaces, ``|``, a stray ``%``, non-ASCII...) is encoded as UTF-8 bytes.
+    In a rule (``literal_specials`` False) ``*`` and a final ``$`` stay special; in a
+    URL path they are data, encoded the way a rule must write them.
     """
     out: list[str] = []
     i = 0
@@ -38,12 +42,11 @@ def _canonical(text: str, literal_specials: bool) -> str:
             out.append(decoded if decoded in _UNRESERVED else "%" + escape.upper())
             i += 3
             continue
-        if literal_specials and ch in "*$":
-            out.append(f"%{ord(ch):02X}")
-        elif ord(ch) > 127:
-            out.append("".join(f"%{b:02X}" for b in ch.encode("utf-8", "surrogatepass")))
-        else:
+        special = not literal_specials and (ch == "*" or (ch == "$" and i == len(text) - 1))
+        if special or ch in _SAFE:
             out.append(ch)
+        else:
+            out.append("".join(f"%{b:02X}" for b in ch.encode("utf-8", "surrogatepass")))
         i += 1
     return "".join(out)
 

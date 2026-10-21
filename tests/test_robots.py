@@ -122,3 +122,24 @@ def test_matching_stays_fast_for_hostile_wildcard_rules():
     started = time.perf_counter()
     assert r.allowed("/" + "a" * 2000)  # no "b": cannot match
     assert time.perf_counter() - started < 0.1
+
+
+# --- characters requests encodes before sending (third review) ------------------------
+
+
+@pytest.mark.parametrize(
+    "rule,link",
+    [("/my%20file.html", "/my file.html"),  # requests sends the space as %20
+     ("/x%7Cy", "/x|y"),
+     ("/x|y", "/x%7Cy"),
+     ("/100%25", "/100%"),  # a stray % is sent as %25
+     ("/a$b", "/a$b")],  # a $ in the middle of a rule is a literal character
+)
+def test_paths_are_compared_the_way_they_are_actually_requested(rule, link):
+    assert not rules(f"User-agent: *\nDisallow: {rule}\n").allowed(link)
+
+
+def test_reserved_characters_keep_their_meaning():
+    r = rules("User-agent: *\nDisallow: /search?q=a\n")
+    assert not r.allowed("/search?q=a&page=2")
+    assert r.allowed("/search%3Fq=a")  # an encoded ? is a different path

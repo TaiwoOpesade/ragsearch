@@ -11,6 +11,7 @@ appearing in results.
 
 import hashlib
 import logging
+import os
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,10 +116,25 @@ def _prune(store: Store, root: Path, seen: set[str]) -> list[str]:
     base = root.resolve().as_posix()
     prefix = base.rstrip("/") + "/"
     gone = [s for s in store.sources
-            if s not in seen and (s == base or s.startswith(prefix)) and not Path(s).exists()]
+            if s not in seen and (s == base or s.startswith(prefix)) and _is_gone(s)]
     for source in gone:
         store.remove(source)
     return gone
+
+
+def _is_gone(path: str) -> bool:
+    """True only if the file system says the file is not there.
+
+    ``Path.exists`` reports an unreadable folder as missing on some Python versions
+    and raises on others; either way such files may still exist, so they are kept.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError as err:
+        log.warning("Keeping %s: could not check whether it still exists (%s)", path, err)
+    return False
 
 
 def search(query: str, embedder: Embedder, store: Store, k: int = 5) -> list[SearchResult]:

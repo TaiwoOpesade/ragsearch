@@ -285,3 +285,21 @@ def test_source_names_with_lone_surrogates_still_save(tmp_path):
 def test_reading_a_fresh_data_dir_creates_nothing(tmp_path):
     Store(tmp_path / "new", embedder_name="hash-3")
     assert not (tmp_path / "new").exists()
+
+
+
+def test_any_corruption_of_the_index_is_reported_as_damage(tmp_path):
+    import random
+
+    saved(tmp_path, "a.md", "b.md")
+    good = (tmp_path / "index.npz").read_bytes()
+    rng = random.Random(7)
+    for _ in range(300):
+        broken = bytearray(good)
+        for _ in range(rng.randint(1, 4)):
+            broken[rng.randrange(len(broken))] = rng.randrange(256)
+        (tmp_path / "index.npz").write_bytes(bytes(broken))
+        try:
+            Store(tmp_path, embedder_name="hash-3")
+        except StoreError:
+            pass  # reported clearly; any other exception fails the test

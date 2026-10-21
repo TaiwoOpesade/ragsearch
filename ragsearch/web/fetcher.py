@@ -67,10 +67,10 @@ class Fetcher:
 
     def crawl(self, start_url: str, max_pages: int = 30, max_depth: int = 2) -> Iterator[Page]:
         """Breadth-first crawl of ``start_url``'s host, yielding pages with text."""
-        host = pages.host(start_url)
         start = pages.resolve(start_url, start_url)
         if start is None:
-            raise FetchError(f"Not an http(s) URL: {start_url!r}")
+            raise FetchError(f"Not a usable http(s) URL: {start_url!r}")
+        host = pages.host(start)
         queue, seen, requests_made = deque([(start, 0)]), {start}, 0
         while queue and requests_made < max_pages:
             url, depth = queue.popleft()

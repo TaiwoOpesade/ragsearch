@@ -9,7 +9,9 @@
 import io
 import json
 import os
+import tokenize
 import zipfile
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +20,8 @@ from ragsearch.fileutil import atomic_write_bytes
 from ragsearch.index import decode_json, encode_json, npz_bytes
 
 # Problems with a file's contents (as opposed to not being able to read it at all).
-DAMAGE = (ValueError, KeyError, TypeError, zipfile.BadZipFile, EOFError)
+DAMAGE = (ValueError, KeyError, TypeError, EOFError, SyntaxError, NotImplementedError,
+          zipfile.BadZipFile, zlib.error, tokenize.TokenError)
 
 
 def signature(st: os.stat_result) -> tuple:

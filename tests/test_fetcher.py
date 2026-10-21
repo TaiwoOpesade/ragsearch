@@ -282,3 +282,21 @@ def test_a_robots_txt_error_is_only_cached_for_a_few_minutes(stub_server, fake_t
     stub_server.routes["/robots.txt"] = (404, {}, "none")  # the site recovered
     fake_time.now += 600
     assert len(list(fetcher.crawl(stub_server.url + "/"))) == 1
+
+
+
+def test_a_disallowed_page_linked_with_a_raw_space_is_not_fetched(stub_server, fake_time):
+    stub_server.routes.update({
+        "/robots.txt": (200, {}, "User-agent: *\nDisallow: /my%20file.html\n"),
+        "/": (200, HTML, page("Home", "Home page text.", ["/my file.html", "/ok"])),
+        "/ok": (200, HTML, page("OK", "Allowed page text.")),
+        "/my%20file.html": (200, HTML, page("Secret", "must never be fetched")),
+    })
+    list(make_fetcher(fake_time).crawl(stub_server.url + "/", max_depth=1))
+    assert "/ok" in stub_server.paths
+    assert "/my%20file.html" not in stub_server.paths
+
+
+def test_a_malformed_start_url_is_a_fetch_error(fake_time):
+    with pytest.raises(FetchError):
+        list(make_fetcher(fake_time).crawl("http://[oops/"))

@@ -220,3 +220,33 @@ def test_files_that_still_exist_are_never_pruned(tmp_path):
 
     assert report.removed == []
     assert len(store.sources) == 2
+
+
+
+def test_files_whose_folder_cannot_be_read_are_kept(tmp_path, monkeypatch, caplog):
+    # On Python 3.14 Path.exists() says False for an unreadable folder, and on 3.10/3.12
+    # it raises; either way a file that may still exist must not be pruned.
+    from ragsearch import pipeline
+
+    notes = tmp_path / "notes"
+    (notes / "locked").mkdir(parents=True)
+    write(notes, "a.md", "alpha")
+    write(notes / "locked", "b.md", "beta")
+    emb = HashEmbedder(dim=64)
+    store = make_store(tmp_path, emb)
+    ingest(load_documents(notes), emb, store, prune_under=notes)
+
+    real_stat = pipeline.os.stat
+
+    def locked(path, *args, **kwargs):
+        if "locked" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.os, "stat", locked)
+    only_top = [d for d in load_documents(notes) if "locked" not in d.source]
+    with caplog.at_level(logging.WARNING):
+        report = ingest(only_top, emb, store, prune_under=notes)
+    assert report.removed == []
+    assert len(store.sources) == 2
+    assert "could not check" in caplog.text
