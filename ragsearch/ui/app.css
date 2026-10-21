@@ -225,6 +225,8 @@ kbd {
 
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
+.pending-time { margin: 0; color: var(--ink-2); font-size: 0.875rem; }
+
 .notice {
   border-radius: var(--radius); padding: 0.9rem 1.1rem; margin-bottom: 1.25rem;
   background: var(--warn-bg); color: var(--warn);

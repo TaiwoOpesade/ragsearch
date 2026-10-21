@@ -180,16 +180,18 @@ function applyMode() {
 function showPending(message) {
   ui.go.disabled = true;
   ui.stop.hidden = false;
-  const text = el("p", { text: message });
+  // Only the message is in the live region; the ticking counter is not, so screen
+  // readers announce the wait once instead of every second.
+  const ticker = el("p", { class: "pending-time", "aria-hidden": "true" });
   ui.output.replaceChildren(el("div", { class: "pending", role: "status" },
-    el("div", { class: "pending-bar" }), text));
+    el("div", { class: "pending-bar" }), el("p", { text: message })), ticker);
   const started = Date.now();
   clearInterval(state.timer);
   state.timer = setInterval(() => {
     const seconds = Math.round((Date.now() - started) / 1000);
     if (seconds >= 4) {
-      text.textContent = `${message} ${seconds} s so far. The first question after Ollama ` +
-        "starts is slower while the model loads.";
+      ticker.textContent = `${seconds} s so far. The first question after Ollama starts ` +
+        "is slower while the model loads.";
     }
   }, 1000);
 }
@@ -223,7 +225,8 @@ async function run(event) {
   } catch (err) {
     if (err.name === "AbortError") {
       if (state.controller === controller) {
-        ui.output.replaceChildren(el("p", { class: "empty-results", text: "Stopped." }));
+        ui.output.replaceChildren(el("p", { class: "empty-results", text: "Stopped waiting. " +
+          "The server may still finish this question in the background." }));
       }
     } else {
       ui.output.replaceChildren(errorNotice(err));
@@ -241,9 +244,10 @@ function withCitations(text, count) {
   let last = 0;
   for (const match of text.matchAll(CITATION)) {
     parts.push(text.slice(last, match.index));
-    const numbers = match[1].split(",").map((n) => Number(n.trim()));
-    if (numbers.every((n) => n >= 1 && n <= count)) numbers.forEach((n) => parts.push(citeLink(n)));
-    else parts.push(match[0]);
+    // Same rule as the server: in-range numbers are citations, others stay as text.
+    for (const n of match[1].split(",").map((x) => Number(x.trim()))) {
+      parts.push(n >= 1 && n <= count ? citeLink(n) : `[${n}]`);
+    }
     last = match.index + match[0].length;
   }
   parts.push(text.slice(last));
@@ -281,10 +285,17 @@ function renderAnswer(data, seconds) {
 }
 
 function unknownAnswer(data) {
-  const canUseWeb = state.health && state.health.web_configured && !ui.web.checked;
-  const hint = state.health && state.health.web_configured
-    ? "Try rephrasing, add more notes, or let ragsearch search the web."
-    : "Try rephrasing or add more notes. To search the web too, add TAVILY_API_KEY to the .env file.";
+  const configured = Boolean(state.health && state.health.web_configured);
+  // The web is only searched when the best local match is below the threshold, so a
+  // retry would change nothing when the notes matched well but still lacked the answer.
+  const best = data.results.reduce((top, r) => Math.max(top, r.score), -1);
+  const threshold = state.health ? state.health.web_fallback_threshold : 0.55;
+  const webWouldRun = best < threshold;
+  const canUseWeb = configured && !ui.web.checked && webWouldRun;
+  const hint = !configured
+    ? "Try rephrasing or add more notes. To search the web too, add TAVILY_API_KEY to the .env file."
+    : webWouldRun ? "Try rephrasing, add more notes, or let ragsearch search the web."
+    : "Your notes matched this question closely but don't answer it. Try rephrasing or add more notes.";
   return el("article", { class: "answer answer-unknown", "aria-label": "Answer" },
     el("h2", { text: "Your notes don't cover this" }),
     el("p", { class: "answer-text", text: data.answer }),
@@ -318,7 +329,8 @@ function sourceList(title, extra, results, cited) {
 }
 
 function sourceItem(result, n, cited) {
-  const web = result.origin === "web";
+  const live = result.origin === "web"; // fetched from the web for this question
+  const web = live || /^https?:\/\//i.test(result.source); // any web page, even if saved
   const snippet = el("p", { class: "snippet clamped", text: result.text });
   const tools = el("div", { class: "source-tools" });
   if (!web && navigator.clipboard) tools.append(copyButton(result.source));
@@ -326,7 +338,8 @@ function sourceItem(result, n, cited) {
     el("span", { class: "num", "aria-hidden": "true", text: String(n) }),
     el("div", { class: "source-body" },
       el("div", { class: "source-head" },
-        el("span", { class: web ? "badge badge-web" : "badge", text: web ? "Web" : "Your notes" }),
+        el("span", { class: live ? "badge badge-web" : "badge",
+          text: live ? "Web" : web ? "Saved page" : "Your notes" }),
         web ? webLink(result.source) : el("span", { class: "source-name", text: baseName(result.source) }),
         cited ? el("span", { class: "visually-hidden", text: "(cited in the answer)" }) : null,
         el("span", { class: "score", title: "Cosine similarity to your question (1 = identical)",
@@ -445,12 +458,12 @@ function setAddBusy(busy) {
   state.addTimer = null;
   if (!busy) return;
   const started = Date.now();
-  const line = el("p", { role: "status", text: "Working." });
-  ui.addResult.replaceChildren(el("div", { class: "pending" }, el("div", { class: "pending-bar" }), line));
+  const ticker = el("p", { class: "pending-time", "aria-hidden": "true" });
+  ui.addResult.replaceChildren(el("div", { class: "pending" }, el("div", { class: "pending-bar" }),
+    el("p", { text: "Working. Big folders and site crawls take a while; you can close this " +
+      "window and keep using ragsearch." }), ticker));
   state.addTimer = setInterval(() => {
-    const seconds = Math.round((Date.now() - started) / 1000);
-    line.textContent = `Working, ${seconds} s so far. Big folders and site crawls take a while; ` +
-      "you can close this window and keep using ragsearch.";
+    ticker.textContent = `${Math.round((Date.now() - started) / 1000)} s so far.`;
   }, 1000);
 }
 
@@ -466,6 +479,7 @@ async function submitAdd(event) {
     let url = ui.url.value.trim();
     if (!url) return fieldProblem(ui.url, "Enter a web address.");
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    url = url.replace(/^https?/i, (scheme) => scheme.toLowerCase()).replace(/ /g, "%20");
     body = {
       url, crawl: ui.crawl.checked, provider: provider(),
       max_pages: clampInt(ui.maxPages.value, 1, 500, 30),
@@ -478,7 +492,8 @@ async function submitAdd(event) {
     setAddBusy(false);
     renderReport(report);
     await refreshHealth();
-    if (!ui.output.querySelector(".answer, .source-list, .notice-error")) renderIdle();
+    const idle = !ui.output.firstChild || ui.output.querySelector(".welcome, .tips");
+    if (!state.controller && idle) renderIdle();
   } catch (err) {
     setAddBusy(false);
     ui.addResult.replaceChildren(errorNotice(err));

@@ -176,7 +176,7 @@ Six questions over four short notes is a smoke test, not a benchmark: write a la
 uvicorn --factory ragsearch.api:create_app
 ```
 
-The server listens on `http://127.0.0.1:8000` and serves the web interface at `/`. It only answers requests addressed to `127.0.0.1` or `localhost` (see `ALLOWED_HOSTS`), which stops a malicious website from reaching it through DNS rebinding. FastAPI also serves interactive docs at `/docs`.
+The server listens on `http://127.0.0.1:8000` and serves the web interface at `/`. It only answers connections from this computer, and only requests addressed to `127.0.0.1` or `localhost` (see `ALLOWED_HOSTS`), which stops a malicious website from reaching it through DNS rebinding. FastAPI also serves interactive docs at `/docs`.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
@@ -231,7 +231,7 @@ Settings come from environment variables, or from a `.env` file in the folder yo
 | `TAVILY_API_KEY` | unset | Needed only for `--provider tavily`, `--web` and `"web": true`. |
 | `TAVILY_MONTHLY_CAP` | `800` | ragsearch refuses any Tavily call that would take this month's usage past the cap. |
 | `WEB_FALLBACK_THRESHOLD` | `0.55` | Web search runs only when the best local score is below this. |
-| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host names the API answers to. Add your computer's network address to use it from another device. |
+| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host names the API answers to. Connections from other computers are always refused: the API has no authentication and can read your files. |
 
 The default cap of 800 leaves 200 of the 1,000 free credits as a safety margin. Costs follow Tavily's published prices: search 1 credit (basic) or 2 (advanced), extract 1 per 5 URLs, map 1 per 10 pages, crawl = map + extract. Before every call, ragsearch books the worst case for that call (for a crawl, the cost of `--max-pages` pages) under a lock file, then settles to what Tavily reports it charged (`include_usage`). A call that never reached Tavily gives its credits back; one that may have been charged (a timeout after sending) keeps them, so the counter never under-counts. Connection failures and 503 replies are retried twice with a short backoff, since neither can have been charged. A 502 or 504 from Tavily's gateway may still have been charged, so it keeps its credits counted and is never resent.
 
@@ -263,7 +263,7 @@ python scripts/benchmark_index.py
 - **The crawler reads static HTML only.** It doesn't run JavaScript or read sitemaps, and it treats `www.example.com` and `example.com` as different hosts. It is stricter than RFC 9309 in one place: a robots.txt answered with 401, 403 or 429 means "don't crawl" (re-checked after 5 minutes).
 - **The credit counter only sees this install.** It doesn't know about credits you spent from another machine or the Tavily dashboard.
 - **Citations are not fact-checked.** The API reports which sources the model cited. A 3B model can still cite the wrong source or add claims the source doesn't make.
-- **The API has no authentication.** It only answers requests addressed to `127.0.0.1` or `localhost`, which blocks websites, but any program on this computer can call it, and `POST /ingest` with a `path` reads any file the server process can read.
+- **The API has no authentication.** It refuses other computers and requests addressed to other host names, which blocks websites and your network, but any program on this computer can call it, and `POST /ingest` with a `path` reads any file the server process can read. Stop only stops the page waiting: the server finishes a question it has started.
 - **Changing the embedding model needs a new data directory.** ragsearch refuses to mix vectors from different embedders and tells you so.
 - **Two processes ingesting the same file at the same moment.** Saves merge, but if both change the same source, the one that saves last wins for that source.
 
