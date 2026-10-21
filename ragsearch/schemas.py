@@ -15,12 +15,14 @@ class Health(BaseModel):
     web_configured: bool = Field(False, description="whether TAVILY_API_KEY is set")
     web_credits_used: int | None = Field(None, description="Tavily credits used this month")
     web_credits_cap: int = Field(800, description="TAVILY_MONTHLY_CAP")
+    web_fallback_threshold: float = Field(
+        0.55, description="the web is searched only when the best local score is below this")
 
 
 class IngestRequest(BaseModel):
     path: str | None = Field(None, min_length=1,
                              description="local file or directory on the server")
-    url: str | None = Field(None, pattern=r"^https?://\S+$",
+    url: str | None = Field(None, pattern=r"(?i)^https?://\S+$",
                             description="http(s) page or site to ingest")
     crawl: bool = False
     max_pages: int = Field(30, ge=1, le=500)

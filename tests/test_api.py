@@ -19,8 +19,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def local_client(app):
-    """A test client whose requests carry Host: 127.0.0.1, as a browser on this machine would."""
-    return TestClient(app, base_url="http://127.0.0.1")
+    """A test client that connects from, and addresses, 127.0.0.1, like a local browser."""
+    return TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
 
 
 class StubGenerator:
@@ -66,7 +66,8 @@ def test_health_reports_status_and_index_size(client):
     body = client.get("/health").json()
     assert body == {"status": "ok", "chunks": 0, "embedder": "hash-512",
                     "index_backend": "numpy", "web_configured": True,
-                    "web_credits_used": 0, "web_credits_cap": 800}
+                    "web_credits_used": 0, "web_credits_cap": 800,
+                    "web_fallback_threshold": 0.55}
 
 
 def test_ingest_path_reports_counts(client):

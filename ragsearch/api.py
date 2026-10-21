@@ -7,17 +7,19 @@ interface at GET / (static files in ``ragsearch/ui``).
 
 One process may serve the API while the CLI ingests into the same data dir:
 the store is refreshed before each request and saves merge with each other.
-Only requests whose Host header is in ``ALLOWED_HOSTS`` are answered, which stops
-a web page that re-points its domain at 127.0.0.1 (DNS rebinding) from using the
-API to read local files.
+The API has no authentication and can read local files, so it only answers
+connections from this computer, and only requests whose Host header is in
+``ALLOWED_HOSTS`` (which stops a web page that re-points its domain at 127.0.0.1,
+known as DNS rebinding, from using it).
 """
 
+import ipaddress
 import mimetypes
 import threading
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
@@ -67,6 +69,15 @@ PAGE_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 
+
+
+def _from_this_computer(request: Request) -> bool:
+    try:
+        return ipaddress.ip_address(request.client.host if request.client else "").is_loopback
+    except ValueError:  # not an IP address at all
+        return False
+
+
 # Which HTTP status each domain error becomes.
 ERROR_STATUS: dict[type[Exception], int] = {
     EmbeddingError: 503,
@@ -101,6 +112,17 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
     app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 
+    @app.middleware("http")
+    async def guard(request: Request, call_next) -> Response:
+        # A network client can fake the Host header, so also check where it connects from.
+        if not _from_this_computer(request):
+            return JSONResponse(status_code=403, content={
+                "detail": "ragsearch only answers requests from this computer"})
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/ui/"):
+            response.headers.update(PAGE_HEADERS)  # every copy of the page, not just "/"
+        return response
+
     for error, status in ERROR_STATUS.items():
         def handler(request: Request, exc: Exception, status: int = status) -> JSONResponse:
             return JSONResponse(status_code=status, content={"detail": str(exc)})
@@ -124,7 +146,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     def page() -> FileResponse:
-        return FileResponse(UI_DIR / "index.html", headers=PAGE_HEADERS)
+        return FileResponse(UI_DIR / "index.html")
 
     @app.get("/health")
     def health() -> Health:
@@ -143,7 +165,8 @@ def create_app(
         return Health(status="ok", chunks=len(store), embedder=embedder.name,
                       index_backend=settings.index_backend,
                       web_configured=bool(settings.tavily_api_key),
-                      web_credits_used=used, web_credits_cap=settings.tavily_monthly_cap)
+                      web_credits_used=used, web_credits_cap=settings.tavily_monthly_cap,
+                      web_fallback_threshold=settings.web_fallback_threshold)
 
     @app.post("/ingest")
     def ingest_endpoint(request: IngestRequest) -> IngestResponse:

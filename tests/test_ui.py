@@ -31,7 +31,7 @@ def settings(tmp_path):
 
 def make_client(settings, **kwargs):
     app = create_app(settings=settings, generator=NoGenerator(), **kwargs)
-    return TestClient(app, base_url="http://127.0.0.1")
+    return TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
 
 
 def test_root_serves_the_page(settings):
@@ -132,3 +132,69 @@ def test_allowed_hosts_setting_is_read_from_the_environment():
     assert load_settings({}).allowed_hosts == ("127.0.0.1", "localhost")
     custom = load_settings({"ALLOWED_HOSTS": " 127.0.0.1, mylaptop.local "})
     assert custom.allowed_hosts == ("127.0.0.1", "mylaptop.local")
+
+
+# --- third review ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("caller", ["192.168.1.20", "10.0.0.5", "testclient"])
+def test_callers_on_other_computers_are_refused_even_with_a_local_host_header(settings,
+                                                                           caller):
+    # A network client can send "Host: 127.0.0.1" itself, so the Host check alone does
+    # not stop it; the API has no authentication and can read local files.
+    app = create_app(settings=settings, generator=NoGenerator())
+    remote = TestClient(app, base_url="http://127.0.0.1", client=(caller, 50000))
+    response = remote.get("/health")
+    assert response.status_code == 403
+    assert "this computer" in response.text
+
+
+@pytest.mark.parametrize("caller", ["127.0.0.1", "127.0.0.2", "::1"])
+def test_callers_on_this_computer_are_served(settings, caller):
+    app = create_app(settings=settings, generator=NoGenerator())
+    local = TestClient(app, base_url="http://127.0.0.1", client=(caller, 50000))
+    assert local.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/ui/index.html", "/ui/app.js", "/ui/app.css"])
+def test_every_ui_file_gets_the_security_headers(settings, path):
+    headers = make_client(settings).get(path).headers
+    assert "frame-ancestors 'none'" in headers["content-security-policy"]
+    assert headers["x-content-type-options"] == "nosniff"
+
+
+def test_api_docs_keep_working_without_the_page_policy(settings):
+    response = make_client(settings).get("/docs")
+    assert response.status_code == 200
+    assert "content-security-policy" not in response.headers  # /docs loads its own assets
+
+
+@pytest.mark.parametrize("url", ["HTTPS://docs.example/", "Https://docs.example/a"])
+def test_url_scheme_is_case_insensitive(url):
+    from ragsearch.schemas import IngestRequest
+
+    assert IngestRequest(url=url).url == url
+
+
+@pytest.mark.parametrize("value", ["192.168.1.*", "::1", "a,,*"])
+def test_unusable_allowed_hosts_are_a_clear_config_error(value):
+    from ragsearch.config import ConfigError, load_settings
+
+    with pytest.raises(ConfigError, match="ALLOWED_HOSTS"):
+        load_settings({"ALLOWED_HOSTS": value})
+
+
+def test_ipv6_and_leading_wildcards_are_accepted_in_allowed_hosts():
+    from ragsearch.config import load_settings
+
+    hosts = load_settings({"ALLOWED_HOSTS": "127.0.0.1,[::1],*.lan.example"}).allowed_hosts
+    assert hosts == ("127.0.0.1", "[::1]", "*.lan.example")
+
+
+def test_health_reports_the_web_fallback_threshold(settings):
+    assert make_client(settings).get("/health").json()["web_fallback_threshold"] == 0.55
+
+
+def test_stylesheet_never_hides_the_keyboard_focus_outline():
+    css = (UI_DIR / "app.css").read_text(encoding="utf-8")
+    assert "outline: none" not in css

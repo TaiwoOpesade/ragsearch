@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 T = TypeVar("T")
 
 _INLINE_COMMENT = re.compile(r"\s#")
+# A host name or IPv4 address (optionally "*." in front), or a bracketed IPv6 address.
+_HOST_ENTRY = re.compile(r"^(\*\.)?[A-Za-z0-9.-]+$|^\[[0-9A-Fa-f:.]+\]$")
 
 INDEX_BACKENDS = ("numpy", "faiss")
 EMBEDDERS = ("ollama", "hash")
@@ -123,6 +125,10 @@ def _hosts(raw: str) -> tuple[str, ...]:
     hosts = tuple(h.strip() for h in raw.split(",") if h.strip())
     if not hosts:
         raise ValueError("list at least one host name, separated by commas")
+    for host in hosts:
+        if not _HOST_ENTRY.match(host):
+            raise ValueError(f"{host!r} is not usable; write host names or IP addresses, "
+                             "[::1] for IPv6, and wildcards only as a leading *.")
     return hosts
 
 

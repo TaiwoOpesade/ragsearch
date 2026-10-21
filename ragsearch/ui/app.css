@@ -283,8 +283,6 @@ kbd {
 .source:nth-child(4) { animation-delay: 90ms; }
 .source:nth-child(n+5) { animation-delay: 120ms; }
 
-.source:focus { outline: none; }
-
 .source.flash { animation: flash 1.6s var(--ease-out); }
 
 .num {
